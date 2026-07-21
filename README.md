@@ -8,9 +8,8 @@ Two machines, each running their own native Wayland session, on their own
 GPU. Sometimes you want a window from the *other* one, right here, as an
 ordinary native app — not a remote-desktop stream, not a second nested
 compositor, just the one window you actually asked for. `waypipe` already
-does this beautifully; `tssh` (trzsz-ssh) already wraps its lifecycle for
-normal interactive use. What's missing is the declarative, portable,
-network-topology-aware layer around them: which address to reach a peer at
+does this beautifully. What's missing is the declarative, portable,
+network-topology-aware layer around it: which address to reach a peer at
 (you're not always on the same LAN), and reproducing all of it from a single
 Nix config instead of hand-written fish functions and `~/.ssh/config` edits.
 
@@ -19,8 +18,7 @@ package provisioning (straight from nixpkgs — no AUR, no pacman, no
 dependency on any particular system-management layer), an ordered
 address cascade (native OpenSSH `Match ... exec` blocks — try the fast LAN
 address first, fall back to a VPN/overlay address when you're not home),
-and a wrapper script that carries the tssh/waypipe-specific flags that must
-never be written into a shared `~/.ssh/config`.
+and a wrapper script around waypipe's own `ssh` mode.
 
 It's deliberately **not** coupled to [nixarch](https://github.com/julian-corbet/nixarch-corbet-ch)
 — nixarch's job is making sure a machine has a working Wayland compositor and
@@ -40,21 +38,65 @@ wired, a single hardcoded LAN IP with no fallback). Honest gaps:
 - The address cascade's fallback behavior was proven live (forced
   unreachability on the real first address, confirmed it falls through to
   the next one) — not assumed correct because it typechecks.
-- UDP roaming (`udpRoaming`) is implemented but off by default and lightly
-  exercised so far — it solves a different problem (a session surviving the
-  *client's* own network path changing mid-session) than the address cascade
-  does (picking the *initial* path to a peer), and shouldn't be conflated
-  with it.
-- Two real, tssh-specific compatibility quirks were found via live testing
-  and are now handled, but are worth knowing about: (1) a VPN client's own
-  system-wide SSH hook (NetBird, and Tailscale has the same feature) can get
-  its `ProxyCommand` applied by `tssh` even when it shouldn't — worked around
-  by every wrapper script unconditionally passing `-o ProxyCommand=none`;
-  (2) `tssh` does not honor `HostKeyAlias` for its own known_hosts lookup
-  (plain `ssh` against the identical config is unaffected) — the first
-  connection to a new peer needs its host key trusted once per literal
-  address, not once per peer alias. See `home/forward.nix`'s header comments
-  for the full detail on both.
+- Verified live, through the real `<app>@<peer>` dispatch command (not a
+  manual invocation): GPU-accelerated forwarding (`vkcube`, RX 6800
+  selected remotely, window visually confirmed on screen), hardware H.264
+  encoding (`extraOptions = [ "--video=h264" ]`, confirmed via
+  `--debug` output showing `H264 support: hwenc T` and a real Vulkan
+  encode queue selected on the remote GPU), and orphan reaping
+  (`nixremote-reap-<peer>` against real orphaned trees left behind by a
+  killed local wrapper, both directions).
+- **A significant course correction, worth recording plainly.** This
+  module's first design invoked `tssh <peer> -o EnableWaypipe=yes <app>`,
+  following `tssh` (trzsz-ssh)'s own documented `EnableWaypipe` feature for
+  automating waypipe's lifecycle. That feature does not exist in the tssh
+  version this was actually built and tested against (0.1.25) — confirmed
+  via `tssh --help`/`man tssh` (neither mentions waypipe/Wayland/GPU
+  anywhere) and a `tssh --debug` trace of a live session (zero
+  waypipe-related activity, only ordinary SSH setup). Every
+  `-o EnableWaypipe=yes` was silently accepted and did nothing: the
+  "forwarded" app was actually just running on the remote machine's own
+  local Wayland session the whole time, invisible locally — exactly why
+  process exit codes and clean logs were never sufficient evidence that
+  this module worked; only a live screenshot, or the person actually
+  looking at their own screen, ever caught it. Rebuilt around waypipe's own
+  `ssh` mode (`waypipe ssh <dest> <command>`), which genuinely implements
+  the protocol itself and needs no tssh involvement. `tssh` is no longer a
+  dependency of this module at all.
+- One real compatibility quirk found via live testing along the way,
+  fixed, and worth knowing about even though it's no longer tssh-specific:
+  nixpkgs' own `waypipe` build links against Nix's own `vulkan-loader`,
+  which has zero visibility into a non-NixOS host's actual GPU driver
+  install (confirmed live on an Arch/CachyOS + system-manager/home-manager
+  host: `vulkaninfo`/`vkcube` both worked perfectly via plain SSH, while
+  `pkgs.waypipe` failed every DMABUF/GPU-touching connection with "Failed
+  to create Vulkan instance: Unable to find a Vulkan driver," confirmed via
+  `LD_DEBUG`/`VK_LOADER_DEBUG` to be a wrong-loader problem, not a missing
+  file or permissions issue). `waypipeBinary`/`installWaypipe` exist
+  specifically to point at a system-provided binary instead on such a host.
+  See `home/forward.nix`'s header for the full diagnosis.
+- Two more bugs caught only by actually watching the app render, not by
+  clean exit codes — both fixed, both worth recording:
+  - The wrapper's first cut passed the whole remote command as one
+    pre-joined, `exec`-prefixed quoted string. waypipe's `ssh` mode does
+    NOT hand that off to a remote shell for parsing the way plain
+    `ssh host "cmd"` does — it builds the remote invocation from the
+    trailing words as a literal argv vector itself, so the literal word
+    `exec` (a shell builtin, not a real binary) became something it tried
+    to execute directly, failing every single forward with `Failed to run
+    program "exec"`. Fixed by passing the tag and command as separate,
+    unquoted words instead.
+  - Orphan detection (`nixremote-reap-<peer>`) initially checked the
+    orphaned root's `/proc/<pid>/environ` for the `NIXREMOTE_PEER` tag —
+    reasoning carried over from testing against a since-abandoned
+    invocation shape. Under waypipe's own `ssh` mode, the env var is only
+    ever set two forks below the process that actually gets re-parented to
+    PID 1 (the remote login shell), so `environ`-based detection silently
+    found nothing to reap. Verified live against real orphaned trees, then
+    fixed: the tag reliably survives as a plain substring of the orphaned
+    root's own **command line** instead (ssh always joins a multi-word
+    remote command into one string handed to `<shell> -c`), so detection
+    now greps `/proc/<pid>/cmdline`.
 
 ## Usage
 
@@ -71,11 +113,11 @@ wired, a single hardcoded LAN IP with no fallback). Honest gaps:
 }
 ```
 
-This installs `waypipe` + `trzsz-ssh` (both from nixpkgs), generates the
-`Match`/`Host` cascade for the alias `some-peer` into its own file —
-`~/.ssh/conf.d/nixremote.conf` — and adds a `waypipe@some-peer` script to
-your `$PATH`: `waypipe@some-peer firefox` forwards a native window from
-`some-peer`, wherever it currently answers.
+This installs `waypipe` (from nixpkgs, unless `installWaypipe = false` — see
+below), generates the `Match`/`Host` cascade for the alias `some-peer` into
+its own file — `~/.ssh/conf.d/nixremote.conf` — and adds a
+`waypipe@some-peer` script to your `$PATH`: `waypipe@some-peer firefox`
+forwards a native window from `some-peer`, wherever it currently answers.
 
 Deliberately **not** managed: `~/.ssh/config` itself. This module never
 touches it, on purpose — home-manager's own ssh module takes over that file
@@ -89,9 +131,10 @@ Include ~/.ssh/conf.d/nixremote.conf
 ```
 
 See [`home/forward.nix`](home/forward.nix) for the full option reference —
-`user`, `scriptName`, `waypipeClientOptions`/`waypipeServerOptions`
-(passthrough tuning, e.g. `--video=h264`), `udpRoaming`, and
-`serverAliveInterval`/`serverAliveCountMax`.
+`user`, `scriptName`, `waypipeBinary`/`installWaypipe` (point at a
+system-provided waypipe instead of nixpkgs' — see Status above for why
+that matters), `extraOptions` (passthrough tuning, e.g. `"--video=h264"`,
+`"--no-gpu"`), and `serverAliveInterval`/`serverAliveCountMax`.
 
 ### `<app>@<peer>` dispatch
 
@@ -117,15 +160,15 @@ header for why (short version: a real machine's existing fish config, e.g.
 
 ### Cleaning up after a killed session
 
-tssh's cleanup is only reliable when the forwarded app exits **on its own**
-(window closed, command finishes) — killing the local `waypipe@<peer>`
-process itself (or a network path vanishing) still orphans the remote side,
-a known, unfixed upstream limitation (verified live, both before and after
-this module's changes). Every wrapper tags its remote command with an
-environment marker, and `nixremote-reap-<peer>` (generated per peer,
-installed alongside the wrapper) finds and kills exactly the orphaned
-process trees left behind — safe to run any time, on demand; it does nothing
-if there's nothing to reap.
+waypipe's own cleanup is only reliable when the forwarded app exits **on
+its own** (window closed, command finishes) — killing the local
+`waypipe@<peer>` process itself (or a network path vanishing) still orphans
+the remote side, a known, unfixed upstream limitation (verified live).
+Every wrapper tags its remote command with an environment marker, and
+`nixremote-reap-<peer>` (generated per peer, installed alongside the
+wrapper) finds and kills exactly the orphaned process trees left behind —
+safe to run any time, on demand; it does nothing if there's nothing to
+reap.
 
 ## Roadmap
 
@@ -142,10 +185,11 @@ honestly rather than left implicit:
 - A NixOS-module mirror of the home-manager module, for parity with how
   nixarch exports both, if a system-layer piece of this ever turns out to
   be needed (nothing here currently requires root).
-- Declarative known_hosts pinning (a `programs.ssh.knownHosts`-style option
-  per address), if the current one-time-per-address manual trust bootstrap
-  (see Status — tssh doesn't honor HostKeyAlias for this) turns out to be
-  more friction than it's worth in practice.
+- Declarative known_hosts pinning (a `programs.ssh.knownHosts`-style option),
+  if the standard first-connection host-key trust prompt (now correctly
+  consolidated to once per peer alias via `HostKeyAlias`, since this module
+  no longer routes through tssh's non-conforming known_hosts lookup) turns
+  out to be more friction than it's worth in practice.
 - Integration tests exercising the address cascade against simulated
   network-partition scenarios, not just eval-time type checks.
 - An opt-in "reap before launch" toggle (run `nixremote-reap-<peer>` inline
