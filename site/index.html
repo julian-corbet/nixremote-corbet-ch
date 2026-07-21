@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>nixremote &mdash; Declarative, address-cascading native app forwarding for Wayland, over Nix</title>
+  <meta name="description" content="nixremote is a home-manager module wrapping waypipe: an ordered LAN/overlay address cascade, hardware H.264/VP9/AV1 video encoding by default, best-effort audio routing over an existing PipeWire device mesh, and orphan-process reaping. Pre-alpha, verified live through the real dispatch path.">
+
+  <meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+
+  <meta property="og:title" content="nixremote">
+  <meta property="og:description" content="Declarative, address-cascading native app forwarding for Wayland over Nix. GPU-accelerated, hardware video encoding by default, audio that follows you.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://nixremote.corbet.ch">
+
+  <link rel="stylesheet" href="https://v1.foss.design.corbet.ch/assets/base.css">
+  <link rel="stylesheet" href="./theme.css">
+</head>
+<body>
+
+<header class="hero">
+  <nav>
+    <a href="/" class="nav-brand">nixremote</a>
+    <div class="nav-links">
+      <a href="https://github.com/julian-corbet/nixremote-corbet-ch">GitHub</a>
+      <a href="#status">Status</a>
+      <a href="#roadmap">Roadmap</a>
+    </div>
+  </nav>
+
+  <div class="hero-content">
+    <h1>nixremote</h1>
+    <p class="tagline">A window from the other machine, right here &mdash; not a stream, an app.</p>
+    <p class="subtitle">
+      A home-manager module around <code>waypipe</code>: an ordered
+      LAN-first/overlay-fallback address cascade, hardware-encoded
+      video by default, best-effort audio routing that follows wherever
+      you actually are, and cleanup for the sessions waypipe itself
+      can't clean up. One option block per peer &mdash; no hand-written
+      fish functions, no manual <code>~/.ssh/config</code> edits.
+    </p>
+    <div class="cta">
+      <a href="#status" class="btn btn-primary">Read the Status</a>
+      <a href="https://github.com/julian-corbet/nixremote-corbet-ch" class="btn btn-secondary">View on GitHub</a>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section id="status" class="how-it-works">
+  <div class="container">
+    <h2>Status: pre-alpha, verified through the real dispatch path</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">&check;</div>
+        <h3>GPU forwarding, hardware encoding, audio &mdash; all live-tested</h3>
+        <p>
+          Not assumed from the docs: a real <code>vkcube</code> and a real
+          Firefox window, GPU selected on the remote end, verified
+          rendering on screen. Hardware H.264 encoding confirmed via a
+          real encode queue on the sending GPU &mdash; and confirmed to
+          matter: on an actual video-playing forward, software frame
+          compression cost ~90% of one CPU core (the single largest
+          consumer on the box, ahead of the app itself) and was a
+          reproduced cause of audio stutter in a separate real-time audio
+          tunnel running alongside it. Hardware encoding dropped that to
+          ~6% for the identical workload &mdash; why it's the default, not
+          an opt-in.
+        </p>
+      </div>
+      <div class="step">
+        <div class="step-num">!</div>
+        <h3>A real course correction, kept in the docs on purpose</h3>
+        <p>
+          The first design assumed a third-party SSH client's documented
+          <code>EnableWaypipe</code> feature would handle waypipe's
+          lifecycle. It doesn't exist in the version this was actually
+          built against &mdash; every invocation was silently accepted
+          and did nothing, and the "working" forward was really just an
+          app running invisibly on the remote machine's own screen. Clean
+          exit codes were never proof of anything; only watching the
+          actual pixels caught it. Rebuilt around waypipe's own
+          <code>ssh</code> mode, which needs no third-party client at all.
+        </p>
+      </div>
+      <div class="step">
+        <div class="step-num">!</div>
+        <h3>No test suite yet</h3>
+        <p>
+          Every claim on this page was verified live, by hand, against
+          two real machines &mdash; not by an automated suite. The
+          address cascade's fallback behavior, orphan reaping, and audio
+          routing have each been forced into their failure path at least
+          once and watched recover; none of that is codified as a test
+          yet.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="features">
+  <div class="container">
+    <h2>What it does</h2>
+    <div class="feature-grid">
+      <div class="feature">
+        <h3>Address cascade</h3>
+        <p>
+          Declare an ordered list of candidate addresses per peer &mdash;
+          a fast LAN IP first, an overlay/VPN address as fallback.
+          Rendered into native OpenSSH <code>Match ... exec</code> blocks
+          with a bundled TCP-probe script, so a plain <code>ssh</code> or
+          the generated wrapper resolves to whichever address actually
+          answers, with no client-side logic of its own.
+        </p>
+      </div>
+      <div class="feature">
+        <h3>Hardware video encoding</h3>
+        <p>
+          <code>video = "h264"</code> by default (also <code>vp9</code>,
+          <code>av1</code>, or <code>none</code>) moves motion content off
+          CPU compression and onto the sending GPU's dedicated encode
+          engine &mdash; confirmed live to be the difference between a
+          usable forward and one that visibly starves everything else
+          running alongside it.
+        </p>
+      </div>
+      <div class="feature">
+        <h3>Audio that follows you</h3>
+        <p>
+          waypipe forwards Wayland only &mdash; audio has nothing to do
+          with it, so a forwarded app's sound plays out of the peer's own
+          speakers by default. <code>audio.localAddress</code> has every
+          launch resolve which of the peer's PipeWire-mesh-mirrored sinks
+          corresponds to your current default output, and routes there
+          instead. Best-effort: no mesh, no match, no problem &mdash; it
+          just falls back to today's behavior.
+        </p>
+      </div>
+      <div class="feature">
+        <h3><code>&lt;app&gt;@&lt;peer&gt;</code> dispatch</h3>
+        <p>
+          Optional fish integration: <code>firefox@some-peer</code> works
+          for any app name, matching the <code>tmux@&lt;host&gt;</code> /
+          <code>zellij@&lt;host&gt;</code> convention already in use on
+          this fleet &mdash; no need to pre-declare every app you might
+          ever forward.
+        </p>
+      </div>
+      <div class="feature">
+        <h3>Orphan reaping</h3>
+        <p>
+          waypipe's own cleanup only works when the forwarded app exits on
+          its own &mdash; killing the local wrapper (or a dropped network
+          path) leaves the remote side running, a known upstream
+          limitation. <code>nixremote-reap-&lt;peer&gt;</code> finds and
+          kills exactly the orphaned process trees left behind, safe to
+          run any time.
+        </p>
+      </div>
+      <div class="feature">
+        <h3>No AUR, no pacman, no dependency</h3>
+        <p>
+          Package provisioning comes straight from nixpkgs via
+          <code>home.packages</code>. Only <code>nixpkgs</code> +
+          <code>home-manager</code> required &mdash; usable on any
+          Wayland-capable, home-manager-managed system, not just an
+          Arch/nixarch box.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="install" class="install">
+  <div class="container">
+    <h2>Get started</h2>
+    <div class="install-grid">
+      <div class="install-method">
+        <h3>1. Add the flake input</h3>
+        <pre><code>inputs.nixremote.url = "github:julian-corbet/nixremote-corbet-ch";</code></pre>
+      </div>
+      <div class="install-method">
+        <h3>2. Import and declare a peer</h3>
+        <pre><code>imports = [ inputs.nixremote.homeManagerModules.forward ];
+
+nixremote.forward.some-peer.addresses = [
+  { address = "192.168.1.10"; }
+  { address = "100.64.0.10"; probeTimeoutMs = 500; }
+];</code></pre>
+      </div>
+      <div class="install-method">
+        <h3>3. One manual, one-time step</h3>
+        <p>
+          This module deliberately never touches <code>~/.ssh/config</code>
+          itself &mdash; add this as its first line, once, on each machine:
+        </p>
+        <pre><code>Include ~/.ssh/conf.d/nixremote.conf</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="commands">
+  <div class="container">
+    <h2>Commands</h2>
+    <div class="table-scroll">
+      <table>
+        <tbody>
+          <tr><td><code>waypipe@some-peer firefox</code></td><td>Forward a native window from <code>some-peer</code>, wherever it currently answers.</td></tr>
+          <tr><td><code>firefox@some-peer</code></td><td>Same, via the optional <code>fishDispatch</code> integration &mdash; any app name, no pre-declaration.</td></tr>
+          <tr><td><code>nixremote-reap-some-peer</code></td><td>Find and kill orphaned remote process trees left by a killed local wrapper. Safe on demand.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="roadmap" class="architecture">
+  <div class="container">
+    <h2>Roadmap (planned, not yet built)</h2>
+    <div class="arch-details">
+      <div class="arch-detail">
+        <h3>A merged local/remote app library</h3>
+        <p>
+          Invoke an app by name and it transparently runs wherever it
+          actually lives &mdash; local if present, else forwarded from
+          whichever peer has it &mdash; without the caller needing to know
+          or care which. Whether this is actually needed in practice is
+          genuinely open.
+        </p>
+      </div>
+      <div class="arch-detail">
+        <h3>Declarative known_hosts pinning</h3>
+        <p>
+          A <code>programs.ssh.knownHosts</code>-style option, if the
+          standard first-connection trust prompt (now consolidated to once
+          per peer alias) turns out to be more friction than it's worth.
+        </p>
+      </div>
+      <div class="arch-detail">
+        <h3>A NixOS-module mirror</h3>
+        <p>
+          For parity with how sibling projects export both layers, if a
+          system-level piece of this ever turns out to be needed &mdash;
+          nothing here currently requires root.
+        </p>
+      </div>
+      <div class="arch-detail">
+        <h3>Integration tests</h3>
+        <p>
+          Exercising the address cascade against simulated
+          network-partition scenarios, not just eval-time type checks.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="container">
+    <div class="footer-links">
+      <a href="https://github.com/julian-corbet/nixremote-corbet-ch">Source</a>
+      <a href="https://github.com/julian-corbet/nixremote-corbet-ch/issues">Issues</a>
+    </div>
+    <p>
+      <a href="https://github.com/julian-corbet/nixremote-corbet-ch/blob/main/LICENSE">MIT</a> &middot;
+      <a href="https://github.com/julian-corbet">Julian Corbet</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

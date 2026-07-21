@@ -1,0 +1,52 @@
+/* =====================================================================
+   nixremote / site / theme.css
+   Project-specific theme override for the foss/v1 design system.
+   Only touches the tokens documented as "safe to override" in the
+   design-corbet-ch project-pages theming contract — retints the accent
+   hue to a lime/chartreuse, distinct from every sibling (nixarch teal,
+   nixvps amber, nixram emerald, nixapps violet, nixgpu red, nixk3s blue).
+
+   Load order:
+     <link rel="stylesheet" href="https://v1.foss.design.corbet.ch/assets/base.css">
+     <link rel="stylesheet" href="./theme.css">
+   ===================================================================== */
+
+:root {
+  /* Dark mode (and default) accent — lime-400. */
+  --accent: #a3e635;
+  --accent-hover: #bef264;
+  --accent-dim: rgba(163, 230, 53, 0.12);
+  --accent-glow: rgba(163, 230, 53, 0.08);
+  --accent-text: #0b1120;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    /* Darker lime for light mode — #4d7c0f on #ffffff is ~5.0:1,
+       comfortably AA for normal text (computed via WCAG relative
+       luminance, not eyeballed). */
+    --accent: #4d7c0f;
+    --accent-hover: #3f6212;
+    --accent-dim: rgba(77, 124, 15, 0.08);
+    --accent-glow: rgba(77, 124, 15, 0.06);
+    --accent-text: #ffffff;
+  }
+}
+
+/* Mirror both variants for the explicit data-theme toggle, so it wins
+   over the OS media query in both directions. */
+:root[data-theme="dark"] {
+  --accent: #a3e635;
+  --accent-hover: #bef264;
+  --accent-dim: rgba(163, 230, 53, 0.12);
+  --accent-glow: rgba(163, 230, 53, 0.08);
+  --accent-text: #0b1120;
+}
+
+:root[data-theme="light"] {
+  --accent: #4d7c0f;
+  --accent-hover: #3f6212;
+  --accent-dim: rgba(77, 124, 15, 0.08);
+  --accent-glow: rgba(77, 124, 15, 0.06);
+  --accent-text: #ffffff;
+}
