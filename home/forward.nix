@@ -372,6 +372,74 @@ let
           detection time is roughly `serverAliveInterval * serverAliveCountMax`.
         '';
       };
+
+      audio = lib.mkOption {
+        default = { };
+        description = ''
+          Best-effort audio routing for the forwarded app, riding on top of a
+          PipeWire device-mesh daemon if one happens to be running on the
+          peer (the kind of setup that mirrors every real audio device on
+          every node as a `Tunnel to tcp:<addr>:<port>/<device>`-described
+          sink — this module doesn't run or require that daemon, it only
+          looks for its sinks). waypipe forwards the Wayland protocol only;
+          it has no concept of audio at all, so a forwarded app's sound
+          plays out of whatever the PEER's own default sink is, which is
+          almost never what you want (verified live: a forwarded Firefox's
+          audio came out of the remote machine's own headphone jack, not the
+          caller's). Rather than pin a fixed destination, this resolves,
+          fresh on every launch, to whichever LOCAL device is CURRENTLY the
+          caller's default — so if you switch outputs (headset, speakers,
+          HDMI), the next forwarded app you launch follows automatically,
+          same as any other app already does. It does not follow a LIVE
+          device switch mid-session — the caller's audio stack already
+          doesn't do that for existing streams either, so this isn't a
+          feature gap.
+        '';
+        type = lib.types.submodule {
+          options = {
+            enable = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = ''
+                Attempt the sink resolution described above. Purely
+                best-effort: if the caller has no default sink, the peer is
+                unreachable for the lookup, or no matching mirrored sink is
+                found, the forwarded app's audio just falls back to
+                whatever the peer's own default sink is (today's behavior)
+                — a missing audio mesh never blocks the window forward
+                itself.
+              '';
+            };
+
+            localAddress = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              example = "192.168.1.14";
+              description = ''
+                The address THIS machine is known by on the peer's audio
+                mesh — i.e. the address that appears after `tcp:` in that
+                mesh's `Tunnel to tcp:<addr>:<port>/<device>` sink
+                descriptions for devices originating here. Null (the
+                default) skips audio resolution entirely: there is no
+                generic way to guess this (it depends entirely on how the
+                remote mesh addresses its nodes), so an explicit address is
+                required to opt in.
+              '';
+            };
+
+            tunnelPort = lib.mkOption {
+              type = lib.types.port;
+              default = 4713;
+              description = ''
+                Port to match in the peer's `Tunnel to tcp:<addr>:<port>/...`
+                sink descriptions. Defaults to 4713, the standard
+                PulseAudio/PipeWire native-protocol port most such meshes
+                listen on.
+              '';
+            };
+          };
+        };
+      };
     };
   };
 in
@@ -406,9 +474,31 @@ in
         (name: peer:
           let
             waypipeExe = if peer.waypipeBinary != null then peer.waypipeBinary else "${pkgs.waypipe}/bin/waypipe";
+
+            # Best-effort: resolve which of the PEER's own sinks is a mesh
+            # mirror of OUR current default sink, and pass it as PULSE_SINK
+            # for the forwarded app. Every failure mode (no local default
+            # sink, peer unreachable, no matching mirror) falls through to
+            # `extra_env` staying just NIXREMOTE_PEER — never fatal, never
+            # blocks the actual window forward.
+            audioResolve = lib.optionalString (peer.audio.enable && peer.audio.localAddress != null) ''
+              local_sink="$(${pkgs.pulseaudio}/bin/pactl get-default-sink 2>/dev/null)" || local_sink=""
+              if [ -n "$local_sink" ]; then
+                pat="Tunnel to tcp:${peer.audio.localAddress}:${toString peer.audio.tunnelPort}/$local_sink"
+                fabric_sink="$(${pkgs.openssh}/bin/ssh ${lib.escapeShellArg peer.sshAlias} pactl list sinks 2>/dev/null | ${pkgs.gawk}/bin/awk -v pat="$pat" '
+                  /^[[:space:]]*Name:/ { name = $2 }
+                  index($0, pat) { print name; exit }
+                ')"
+                if [ -n "$fabric_sink" ]; then
+                  extra_env="$extra_env PULSE_SINK=$fabric_sink"
+                fi
+              fi
+            '';
           in
           pkgs.writeShellScriptBin peer.scriptName ''
-            exec ${waypipeExe} ${lib.escapeShellArgs peer.extraOptions} --remote-bin ${lib.escapeShellArg waypipeExe} ssh ${lib.escapeShellArg peer.sshAlias} env NIXREMOTE_PEER=${lib.escapeShellArg peer.sshAlias} "$@"
+            extra_env="NIXREMOTE_PEER=${lib.escapeShellArg peer.sshAlias}"
+            ${audioResolve}
+            exec ${waypipeExe} ${lib.escapeShellArgs peer.extraOptions} --remote-bin ${lib.escapeShellArg waypipeExe} ssh ${lib.escapeShellArg peer.sshAlias} env $extra_env "$@"
           ''
         )
         cfg)

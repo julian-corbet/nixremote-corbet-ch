@@ -97,6 +97,17 @@ wired, a single hardcoded LAN IP with no fallback). Honest gaps:
     root's own **command line** instead (ssh always joins a multi-word
     remote command into one string handed to `<shell> -c`), so detection
     now greps `/proc/<pid>/cmdline`.
+- **Audio** (`audio.*`, see below) verified live through the real dispatch
+  path: a forwarded app's sound followed the caller's current default
+  output device (a Bluetooth/USB headset), confirmed audible, twice, with
+  a genuine libpulse client (`paplay`). One test-tooling trap along the
+  way, worth recording so nobody re-walks it: `pw-cat --playback` does
+  **not** honor `PULSE_SINK` (it's a native PipeWire tool, not a
+  libpulse/pulse-compat client) — it silently plays to whatever
+  PipeWire's own default is regardless of the env var, which looked
+  exactly like a forwarding failure until swapping in `paplay` (which does
+  honor it, same as Firefox and most other real apps) proved the actual
+  mechanism was fine all along.
 
 ## Usage
 
@@ -157,6 +168,33 @@ might ever forward. Implemented as a `~/.config/fish/conf.d/*.fish` file, not
 `programs.fish.functions` — see [`home/fish-dispatch.nix`](home/fish-dispatch.nix)'s
 header for why (short version: a real machine's existing fish config, e.g.
 `cachyos-fish-config`, would otherwise get silently replaced).
+
+### Audio
+
+waypipe forwards the Wayland protocol only — it has no concept of audio, so
+a forwarded app's sound plays out of the *peer's* own default output, not
+yours (confirmed live: a forwarded Firefox's audio came out of the remote
+machine's speakers, not the caller's). If the peer happens to be running a
+PipeWire device-mesh daemon of the kind that mirrors every real audio
+device on every node as a sink described `Tunnel to tcp:<addr>:<port>/<device>`
+(this module doesn't run or require one, it only looks for its sinks),
+`audio.enable = true` (the default) has every wrapper resolve, fresh on
+each launch, which of the *peer's* sinks mirrors *your* current default
+output, and sets `PULSE_SINK` to it — so the forwarded app's audio follows
+wherever you actually are, the same way any other app's already does. Pure
+best-effort: no default sink, an unreachable peer, or no matching mirror
+just falls through to today's behavior (the peer's own default), never
+blocking the window forward itself.
+
+```nix
+nixremote.forward.some-peer.audio.localAddress = "192.168.1.14";
+```
+
+`audio.localAddress` — the address *this* machine is known by on the
+peer's mesh (there's no generic way to guess it, so it's opt-in and
+explicit) — is the only thing you need to set; `audio.tunnelPort` defaults
+to 4713 (the standard PulseAudio/PipeWire native-protocol port). See
+`home/forward.nix`'s `audio` option docs for the full reference.
 
 ### Cleaning up after a killed session
 
