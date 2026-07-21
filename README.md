@@ -40,12 +40,27 @@ wired, a single hardcoded LAN IP with no fallback). Honest gaps:
   the next one) — not assumed correct because it typechecks.
 - Verified live, through the real `<app>@<peer>` dispatch command (not a
   manual invocation): GPU-accelerated forwarding (`vkcube`, RX 6800
-  selected remotely, window visually confirmed on screen), hardware H.264
-  encoding (`extraOptions = [ "--video=h264" ]`, confirmed via
+  selected remotely, window visually confirmed on screen; a real Firefox
+  window too — `zwp_linux_dmabuf_v1` bound, formats negotiated against the
+  RX 6800, a `get_surface_feedback` call tied to the actual browser
+  surface), hardware H.264 encoding (`video = "h264"`, confirmed via
   `--debug` output showing `H264 support: hwenc T` and a real Vulkan
   encode queue selected on the remote GPU), and orphan reaping
   (`nixremote-reap-<peer>` against real orphaned trees left behind by a
   killed local wrapper, both directions).
+- **`video`'s CPU cost is not a rounding error — this is why it's the
+  default.** Measured live on a real Firefox forward with an actual
+  playing video (not a synthetic benchmark): the local `waypipe` process
+  compressing raw frame updates with `lz4` (`video = "none"`) sat at
+  **~90% of one CPU core** — comfortably the single largest consumer on
+  the sending host, well above Firefox's own processes combined. Switching
+  to `video = "h264"` dropped that to **~6%** for the identical workload.
+  On a host that's also running other work (verified live: this box's load
+  average was ~24 on 32 threads from unrelated processes), that ~90%
+  chunk landing on top of an already-busy scheduler is a real, reproduced
+  cause of audible stutter in a *separate* PipeWire audio tunnel running
+  alongside it — not a hypothetical. `none` still exists for hosts without
+  a working DMABUF/GPU path (see the `waypipeBinary` gotcha below).
 - **A significant course correction, worth recording plainly.** This
   module's first design invoked `tssh <peer> -o EnableWaypipe=yes <app>`,
   following `tssh` (trzsz-ssh)'s own documented `EnableWaypipe` feature for
@@ -144,8 +159,12 @@ Include ~/.ssh/conf.d/nixremote.conf
 See [`home/forward.nix`](home/forward.nix) for the full option reference —
 `user`, `scriptName`, `waypipeBinary`/`installWaypipe` (point at a
 system-provided waypipe instead of nixpkgs' — see Status above for why
-that matters), `extraOptions` (passthrough tuning, e.g. `"--video=h264"`,
-`"--no-gpu"`), and `serverAliveInterval`/`serverAliveCountMax`.
+that matters), `video` (hardware-encode motion content — `none`/`h264`/
+`vp9`/`av1`, defaults to `h264`; see Status above for why the default
+isn't `none`), `extraOptions` (any other passthrough flag, e.g.
+`"--no-gpu"`), `audio.*` (route a forwarded app's sound to wherever you
+actually are — see its own section below), and
+`serverAliveInterval`/`serverAliveCountMax`.
 
 ### `<app>@<peer>` dispatch
 

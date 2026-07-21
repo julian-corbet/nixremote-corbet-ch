@@ -333,17 +333,44 @@ let
         '';
       };
 
+      video = lib.mkOption {
+        type = lib.types.enum [ "none" "h264" "vp9" "av1" ];
+        default = "h264";
+        description = ''
+          Hardware-encode DMABUF motion content instead of forwarding raw
+          frames through `--compress` (lz4 on the CPU). Verified live: with
+          `none`, waypipe's own frame-forwarding process was the single
+          largest CPU consumer on the sending host during real playback —
+          ~90% of a core, well above the forwarded app itself — enough
+          headroom loss under host load to cause audible audio stutter
+          (the audio path is a separate, independent tunnel competing for
+          the same CPU). `h264` moves that work onto the GPU's dedicated
+          encode engine instead (confirmed live: a real hardware encode
+          queue selected on an RX 6800, `hwenc T`), which is why it's the
+          default rather than an opt-in.
+
+          These are waypipe's own supported values (`waypipe --help`) —
+          there is no `h265`, only `h264`/`vp9`/`av1`. Which of `vp9`/`av1`
+          actually get hardware-encoded (vs. falling back to software, or
+          failing outright) depends entirely on the SENDING host's GPU and
+          driver — untested here beyond `h264`; check `waypipe --debug`
+          output for `hwenc T`/`hwenc f` per codec before relying on one.
+          `none` restores the old CPU-compression-only behavior.
+        '';
+      };
+
       extraOptions = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [ ];
-        example = [ "--video=h264" ];
+        example = [ "--no-gpu" ];
         description = ''
           Extra flags passed directly to the local `waypipe` invocation
-          (e.g. `"--video=h264"` for hardware-encoded motion content,
-          `"--no-gpu"` to block DMABUF/GPU protocols entirely and force
-          pure-shm forwarding — see `waypipeBinary`'s gotcha for when that
-          matters). See `waypipe --help` for the full set; passed as-is,
-          this module has no opinion on their content.
+          (e.g. `"--no-gpu"` to block DMABUF/GPU protocols entirely and
+          force pure-shm forwarding — see `waypipeBinary`'s gotcha for when
+          that matters). Don't put `--video=` here — use the dedicated
+          `video` option above instead, so the two can't disagree. See
+          `waypipe --help` for the full flag set; passed as-is, this module
+          has no opinion on their content.
         '';
       };
 
@@ -475,6 +502,8 @@ in
           let
             waypipeExe = if peer.waypipeBinary != null then peer.waypipeBinary else "${pkgs.waypipe}/bin/waypipe";
 
+            videoFlag = lib.optionals (peer.video != "none") [ "--video=${peer.video}" ];
+
             # Best-effort: resolve which of the PEER's own sinks is a mesh
             # mirror of OUR current default sink, and pass it as PULSE_SINK
             # for the forwarded app. Every failure mode (no local default
@@ -498,7 +527,7 @@ in
           pkgs.writeShellScriptBin peer.scriptName ''
             extra_env="NIXREMOTE_PEER=${lib.escapeShellArg peer.sshAlias}"
             ${audioResolve}
-            exec ${waypipeExe} ${lib.escapeShellArgs peer.extraOptions} --remote-bin ${lib.escapeShellArg waypipeExe} ssh ${lib.escapeShellArg peer.sshAlias} env $extra_env "$@"
+            exec ${waypipeExe} ${lib.escapeShellArgs (videoFlag ++ peer.extraOptions)} --remote-bin ${lib.escapeShellArg waypipeExe} ssh ${lib.escapeShellArg peer.sshAlias} env $extra_env "$@"
           ''
         )
         cfg)
