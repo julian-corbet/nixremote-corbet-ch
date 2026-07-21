@@ -161,7 +161,10 @@ See [`home/forward.nix`](home/forward.nix) for the full option reference —
 system-provided waypipe instead of nixpkgs' — see Status above for why
 that matters), `video` (hardware-encode motion content — `none`/`h264`/
 `vp9`/`av1`, defaults to `h264`; see Status above for why the default
-isn't `none`), `extraOptions` (any other passthrough flag, e.g.
+isn't `none`), `compress` (tune CPU compression for non-video traffic,
+e.g. `"zstd=5"` — `null` leaves waypipe's own `lz4` default alone; see its
+own option docs for `waypipe bench` numbers measured against a real LAN
+link, not assumed), `extraOptions` (any other passthrough flag, e.g.
 `"--no-gpu"`), `audio.*` (route a forwarded app's sound to wherever you
 actually are — see its own section below), and
 `serverAliveInterval`/`serverAliveCountMax`.

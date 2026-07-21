@@ -359,6 +359,33 @@ let
         '';
       };
 
+      compress = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "zstd=5";
+        description = ''
+          Passthrough for waypipe's `--compress` (CPU compression of
+          non-DMABUF/non-video traffic — Wayland protocol metadata, SHM
+          buffer diffs for apps like `foot`; irrelevant to `video`-encoded
+          motion content, which bypasses this entirely). `null` (the
+          default) leaves waypipe's own default (`lz4`) untouched.
+
+          Measured live via `waypipe bench` against a real LAN link (this
+          module's actual archlxc↔elitebook link, ~1.6-2ms): for
+          `image-like` content lz4's compression ratio is ~1.004 — i.e.
+          essentially none, since photo/rendered data doesn't dedup well —
+          meaning it is pure CPU cost with no bandwidth payoff there
+          (moot in practice: `video=h264` already routes that content
+          away from `--compress` entirely). For `text-like` content
+          (`foot` and friends' actual traffic) `zstd` at a tuned level
+          measurably beats untuned `lz4` at realistic LAN bandwidths
+          (e.g. `zstd=5` at 100 MB/s: ~42ms/32MB vs. lz4's untuned
+          default) — worth setting explicitly if you forward a lot of
+          terminal/text-heavy apps and want to squeeze this further, but
+          the gain here is real, not dramatic — nowhere near `video`'s.
+        '';
+      };
+
       extraOptions = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [ ];
@@ -503,6 +530,7 @@ in
             waypipeExe = if peer.waypipeBinary != null then peer.waypipeBinary else "${pkgs.waypipe}/bin/waypipe";
 
             videoFlag = lib.optionals (peer.video != "none") [ "--video=${peer.video}" ];
+            compressFlag = lib.optionals (peer.compress != null) [ "--compress=${peer.compress}" ];
 
             # Best-effort: resolve which of the PEER's own sinks is a mesh
             # mirror of OUR current default sink, and pass it as PULSE_SINK
@@ -527,7 +555,7 @@ in
           pkgs.writeShellScriptBin peer.scriptName ''
             extra_env="NIXREMOTE_PEER=${lib.escapeShellArg peer.sshAlias}"
             ${audioResolve}
-            exec ${waypipeExe} ${lib.escapeShellArgs (videoFlag ++ peer.extraOptions)} --remote-bin ${lib.escapeShellArg waypipeExe} ssh ${lib.escapeShellArg peer.sshAlias} env $extra_env "$@"
+            exec ${waypipeExe} ${lib.escapeShellArgs (videoFlag ++ compressFlag ++ peer.extraOptions)} --remote-bin ${lib.escapeShellArg waypipeExe} ssh ${lib.escapeShellArg peer.sshAlias} env $extra_env "$@"
           ''
         )
         cfg)
