@@ -18,6 +18,7 @@
       homeManagerModules = {
         forward = ./home/forward.nix;
         fishDispatch = ./home/fish-dispatch.nix;
+        sunshine = ./home/sunshine.nix;
       };
 
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);
