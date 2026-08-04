@@ -447,6 +447,18 @@ let
     exec ${c.web.package}/bin/novnc --vnc ${lib.escapeShellArg "${c.web.connectAddress}:${toString c.port}"} --listen ${toString c.web.port}
   '';
 
+  # Every ExecStart/ExecStartPre above is already its own interpolated store path, so this unit
+  # never needed a PATH for THOSE. It needs one anyway: `web.package` (nixpkgs' `novnc`) ships a
+  # THIRD-PARTY wrapper script (`novnc_proxy`) that shells out to bare `basename`/`dirname`/
+  # `readlink`/`realpath`/`sleep`/`ps`/`grep` internally -- code this module does not control and
+  # cannot interpolate into. Confirmed live 2026-08-04 via `systemd-run --user --pipe --wait`
+  # (the ONLY way that reproduced it -- a `sudo -u` shell inherits the caller's own rich PATH and
+  # hid this completely): every one of those names failed with "command not found" under a real
+  # systemd --user unit, whose default PATH carries no nix-built coreutils at all. Given on both
+  # units for the same reason console.nix's other fixes already state: nothing here should ever
+  # depend on what a `systemd --user` manager happens to default its PATH to.
+  extraEnvironment.Environment = "PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.procps pkgs.gnugrep ]}";
+
   mkUnitsFor = name: c:
     lib.optionalAttrs c.enable ({
       "${unitName name}" = {
@@ -455,7 +467,7 @@ let
           PartOf = [ "graphical-session.target" ];
           After = [ "graphical-session.target" ];
         };
-        Service = {
+        Service = extraEnvironment // {
           ExecStartPre = [ "${renderConfigScript name c}" ];
           ExecStart = "${wayvncStartScript name c}";
           Restart = "on-failure";
@@ -471,7 +483,7 @@ let
           After = [ "graphical-session.target" "${unitName name}.service" ];
           Requires = [ "${unitName name}.service" ];
         };
-        Service = {
+        Service = extraEnvironment // {
           ExecStart = "${webStartScript name c}";
           Restart = "on-failure";
           RestartSec = 5;
