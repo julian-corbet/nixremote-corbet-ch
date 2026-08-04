@@ -326,6 +326,14 @@ let
   # never a Nix store path. `address`/`port`/`output` are NOT secret, so they're passed as plain
   # CLI arguments in `wayvncStartScript` below instead of duplicated here -- one source of truth
   # for each value, secret or not.
+  #
+  # `install`/`cat` BELOW ARE INTERPOLATED STORE PATHS, NOT BARE NAMES -- found live 2026-08-04:
+  # this unit carries no `Environment=PATH=`, and a systemd --user manager's own default PATH is
+  # not guaranteed to include a nix-built coreutils (confirmed on the devhome host: it does not),
+  # so a bare `install`/`cat` here failed with a bare exit 127 and no other diagnostic, crash-
+  # looping the unit indefinitely under `Restart=on-failure`. Exactly the same class of bug (and
+  # fix) this repo's own `sunshine.nix`/`hosts/nixnas-devhome.nix` already document for a bare
+  # `ExecStart=` name -- see either for the fuller mechanism.
   renderConfigScript = name: c: pkgs.writeShellScript "nixremote-console-${name}-render-config" ''
     set -euo pipefail
     # SECOND LAYER escaping (see consoleModule's `_instanceName` option for the PRIMARY defense,
@@ -343,7 +351,7 @@ let
     # moment anyone ever loosens `_instanceName`'s type without also revisiting this call site.
     out_dir="''${XDG_RUNTIME_DIR:?nixremote console: XDG_RUNTIME_DIR is not set -- this unit must run inside a real user session}/"${lib.escapeShellArg (runtimeSubdir name)}
     umask 077
-    install -d -m 0700 "$out_dir"
+    ${pkgs.coreutils}/bin/install -d -m 0700 "$out_dir"
 
     # Read a secret file into a shell VARIABLE first, then use the variable -- never inline a
     # `$(cat ...)` command substitution directly as another command's argument. Under `set -e`,
@@ -362,7 +370,7 @@ let
         echo "nixremote console "${lib.escapeShellArg name}": $label file is not readable: $file" >&2
         exit 1
       fi
-      cat "$file"
+      ${pkgs.coreutils}/bin/cat "$file"
     }
 
     {
