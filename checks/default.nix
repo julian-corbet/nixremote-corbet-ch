@@ -6,8 +6,12 @@
 # for sunshine/console/forward, since `nix flake check` does not evaluate `homeManagerModules`
 # at all -- it lists them as unchecked and moves on, so without this, sunshine's/console's/
 # forward's own option wiring (the fail-closed output gate, the auth/tls coupling assertions,
-# the nixaudio catalogue gate, ...) would be entirely untested by CI.
-{ pkgs, lib, system, rustdeskModule, sunshineModule, consoleModule, forwardModule, rustdeskClientModule, probeFact }:
+# the nixaudio catalogue gate, ...) would be entirely untested by CI. Same reasoning for
+# `systemManagerModules` -- `toolsModule` below (modules/system-manager.nix, which imports the
+# new modules/tools.nix) is evaluated with the same bare `lib.evalModules` technique, since it
+# needs no NixOS/system-manager-specific machinery either -- it only reads/writes plain
+# `nixremote.*`/`nixarch.packages.*` options.
+{ pkgs, lib, system, rustdeskModule, sunshineModule, consoleModule, forwardModule, rustdeskClientModule, probeFact, toolsModule }:
 
 let
   check = name: ok: detail: { inherit name ok detail; };
@@ -29,6 +33,26 @@ let
 
   sorted = lib.sort (a: b: a < b);
   serviceNames = cfg: sorted (lib.attrNames cfg.systemd.services);
+
+  # ── system-manager plane: modules/tools.nix (openssh/waypipe), via toolsModule ──────────────
+  #
+  # Stub of the one option system-manager.nix's PRE-EXISTING moonlight branch reaches for
+  # (`nixarch.packages.pacman`) -- the module system needs the option DECLARED to accept an
+  # assignment to it even when `lib.mkIf cfg.moonlight.enable` makes the value conditional, so a
+  # bare `lib.evalModules` of toolsModule fails without this even with moonlight left off.
+  nixarchStub = { lib, ... }: {
+    options.nixarch.packages.pacman = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
+  };
+
+  evalTools = extraConfig: (lib.evalModules {
+    modules = [ nixarchStub toolsModule extraConfig ];
+  }).config;
+
+  toolsBuildFails = extraConfig:
+    !(builtins.tryEval (builtins.seq (evalTools extraConfig).nixremote.archPackages true)).success;
+
+  tools-empty = evalTools { };
+  tools-both = evalTools { nixremote.transport = [ "openssh" "waypipe" ]; };
 
   cfg-baseline = evalNixosModules [ bareStubs ];
   cfg-bare = evalNixosModules [ bareStubs rustdeskModule ];
@@ -492,11 +516,45 @@ let
       (forward-noAudio.warnings == [ ])
       "no peer here sets audio.localAddress, so warnings must stay empty regardless (audioConsumed is false) -- got: ${builtins.toJSON forward-noAudio.warnings}")
   ];
+
+  toolsResults = [
+    (check "tools/no-selection-installs-nothing"
+      (tools-empty.nixremote.archPackages == [ ] && tools-empty.nixremote.aurPackages == [ ])
+      "nixremote.transport left at its default ([ ]) must resolve to zero packages on either channel -- got archPackages: ${builtins.toJSON tools-empty.nixremote.archPackages}, aurPackages: ${builtins.toJSON tools-empty.nixremote.aurPackages}")
+
+    (check "tools/openssh-and-waypipe-resolve-to-their-real-pacman-names"
+      (tools-both.nixremote.archPackages == [ "openssh" "waypipe" ])
+      "got: ${builtins.toJSON tools-both.nixremote.archPackages}")
+
+    (check "tools/neither-openssh-nor-waypipe-is-treated-as-aur"
+      (tools-both.nixremote.aurPackages == [ ])
+      "both are official-repo packages -- got: ${builtins.toJSON tools-both.nixremote.aurPackages}")
+
+    (check "tools/neither-has-a-missing-nixpkgs-equivalent"
+      (tools-both.nixremote.unavailableOnNixos == [ ])
+      "got: ${builtins.toJSON tools-both.nixremote.unavailableOnNixos}")
+
+    # Non-vacuity: an unknown transport name must be REJECTED at eval time (the `enum` type in
+    # tools.nix's `mkGroup`), the same "typo is an error, not a silent no-op" contract nixdev's
+    # own mkGroup enforces. Proven live by temporarily reverting the `enum` to a bare `str` and
+    # re-running `nix build` on this exact derivation: this check's own `tryEval` no longer
+    # shields the suite at all -- the option-merge error moves from a clean, immediate throw on
+    # `nixremote.transport` itself (`enum`, caught cleanly by `toolsBuildFails`) to a LATER throw
+    # reached only once `selected`'s `tools.transport.${k}` attribute lookup is forced deep inside
+    # `nixremote.archPackages` -- and THAT throw propagates straight through `tryEval` uncaught,
+    # crashing the entire `nix build` with a raw "attribute 'tssh' missing" trace instead of a
+    # clean per-check failure. Restored afterward, confirmed clean again (71/71). Either way an
+    # unknown name never silently resolves to nothing -- but only the `enum` keeps the failure
+    # inside this suite's own report instead of taking the whole derivation down with it.
+    (check "tools/unknown-transport-name-is-rejected-at-eval-time"
+      (toolsBuildFails { nixremote.transport = [ "tssh" ]; })
+      "nixremote.transport naming a key tools.nix's catalogue does not have (\"tssh\" -- deliberately never added, see modules/system-manager.nix's header) must fail evaluation instead of silently resolving to nothing, but it succeeded")
+  ];
 in
 {
   eval-tests =
     let
-      allResults = results ++ hmResults ++ forwardResults ++ [
+      allResults = results ++ hmResults ++ forwardResults ++ toolsResults ++ [
         (check "console/disabled-instance-adds-no-units"
           (consoleServiceNames console-disabled == [ ])
           "enable = false must add zero systemd --user units -- got: ${builtins.toJSON (consoleServiceNames console-disabled)}")

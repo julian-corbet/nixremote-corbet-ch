@@ -8,11 +8,19 @@
 # modules: system-manager and home-manager are two independent `lib.evalModules` runs with no shared
 # `config`. `nixremote.moonlight.enable` set in a home-manager profile is invisible here, so a host
 # that wants both states both — the same split nixscroll's own install plane already draws.
+#
+# Also imports ./tools.nix: the plain catalogue-selection surface (`nixremote.transport`,
+# `archPackages`/`aurPackages`) for openssh/waypipe — see that module's own header for why it is a
+# separate option shape from `nixremote.install.*` below rather than folded into it. Composing
+# THIS module (`systemManagerModules.default`) is what a host needs for either surface; there is
+# no second module to import for the catalogue half.
 { lib, config, ... }:
 let
   cfg = config.nixremote.install;
 in
 {
+  imports = [ ./tools.nix ];
+
   options.nixremote.install = {
     moonlight = {
       enable = lib.mkEnableOption "installing the Moonlight streaming client on an Arch/CachyOS host via nixarch's package reconciler";

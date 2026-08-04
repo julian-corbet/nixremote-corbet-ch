@@ -85,6 +85,9 @@
           inherit sunshineModule forwardModule;
           consoleModule = self.homeManagerModules.console;
           rustdeskClientModule = self.homeManagerModules.rustdeskClient;
+          # The Arch plane, tools.nix included (system-manager.nix imports it) -- see
+          # checks/default.nix's own tools/* section for what is under test.
+          toolsModule = self.systemManagerModules.default;
           # Unlike nixdesktop (not an input -- home/sunshine.nix's own probe against it stays a
           # defensive, zero-flake-dependency read regardless of whether nixdesktop is composed),
           # nixhost genuinely IS a flake input, so `nix flake check` gets the real, locked
