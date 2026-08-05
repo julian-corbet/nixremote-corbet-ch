@@ -28,5 +28,14 @@
     # home/forward.nix (declarative, address-cascading Wayland app forwarding) runs on. No AUR
     # needed.
     waypipe = { arch = "waypipe"; nixpkgs = "waypipe"; };
+
+    # FreeRDP client. Official Arch/CachyOS repository package (`freerdp`) and
+    # the matching current nixpkgs attribute. It is needed on both Arch hosts
+    # for the RDP leg of the remote-client toolbox.
+    freerdp = { arch = "freerdp"; nixpkgs = "freerdp"; };
+
+    # Non-interactive SSH password helper. Official Arch/CachyOS repository
+    # package and nixpkgs attribute; used on both Arch hosts and corbet-server.
+    sshpass = { arch = "sshpass"; nixpkgs = "sshpass"; };
   };
 }

@@ -1,10 +1,9 @@
 #
 # nixremote's own tool catalogue, resolved — platform-neutral, installs nothing itself. Same
 # shape as nixdev's modules/nixdev.nix and nixfs's modules/nixfs.nix core modules: declares WHAT
-# is wanted, resolves it via ../lib/tools.nix, and publishes archPackages/aurPackages for a
-# platform backend to consume. See modules/system-manager.nix, the only backend that consumes it
-# today (nixremote has no NixOS backend for this catalogue -- see that module's own header for
-# why the Arch case is the one that matters here).
+# is wanted, resolves it via ../lib/tools.nix, and publishes the platform-neutral selection that
+# Arch and NixOS backends consume. See modules/system-manager.nix (names for nixarch's reconciler)
+# and modules/nixos-tools.nix (nixpkgs derivations for environment.systemPackages).
 #
 # WHY A SEPARATE OPTION SURFACE FROM `nixremote.install.*`. That existing surface (moonlight) is
 # one enable flag per app-shaped package with its own knobs (a binary override, for one). openssh
@@ -66,8 +65,8 @@ in
 
           nixarch.packages.aur = config.nixremote.aurPackages;
 
-        Empty for the current catalogue -- both openssh and waypipe are official-repo packages --
-        but the mechanism stays for whatever this catalogue grows next.
+        Empty for the current catalogue -- every transport tool is currently an official-repo
+        package -- but the mechanism stays for whatever this catalogue grows next.
       '';
     };
 

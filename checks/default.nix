@@ -7,11 +7,11 @@
 # at all -- it lists them as unchecked and moves on, so without this, sunshine's/console's/
 # forward's own option wiring (the fail-closed output gate, the auth/tls coupling assertions,
 # the nixaudio catalogue gate, ...) would be entirely untested by CI. Same reasoning for
-# `systemManagerModules` -- `toolsModule` below (modules/system-manager.nix, which imports the
-# new modules/tools.nix) is evaluated with the same bare `lib.evalModules` technique, since it
-# needs no NixOS/system-manager-specific machinery either -- it only reads/writes plain
-# `nixremote.*`/`nixarch.packages.*` options.
-{ pkgs, lib, system, rustdeskModule, sunshineModule, consoleModule, forwardModule, rustdeskClientModule, probeFact, toolsModule }:
+# `systemManagerModules` -- `toolsModule` below (modules/system-manager.nix, which imports
+# modules/tools.nix) is evaluated with the same bare `lib.evalModules` technique. The matching
+# NixOS backend is evaluated through eval-config, proving the catalogue resolves to real packages
+# on both supported platforms.
+{ pkgs, lib, system, rustdeskModule, sunshineModule, consoleModule, forwardModule, rustdeskClientModule, probeFact, toolsModule, toolsNixosModule }:
 
 let
   check = name: ok: detail: { inherit name ok detail; };
@@ -53,6 +53,8 @@ let
 
   tools-empty = evalTools { };
   tools-both = evalTools { nixremote.transport = [ "openssh" "waypipe" ]; };
+  tools-all = evalTools { nixremote.transport = [ "openssh" "waypipe" "freerdp" "sshpass" ]; };
+  tools-nixos = evalNixosModules [ bareStubs toolsNixosModule { nixremote.transport = [ "sshpass" ]; } ];
 
   cfg-baseline = evalNixosModules [ bareStubs ];
   cfg-bare = evalNixosModules [ bareStubs rustdeskModule ];
@@ -533,6 +535,14 @@ let
     (check "tools/neither-has-a-missing-nixpkgs-equivalent"
       (tools-both.nixremote.unavailableOnNixos == [ ])
       "got: ${builtins.toJSON tools-both.nixremote.unavailableOnNixos}")
+
+    (check "tools/freerdp-and-sshpass-resolve-to-their-real-pacman-names"
+      (tools-all.nixremote.archPackages == [ "openssh" "waypipe" "freerdp" "sshpass" ])
+      "got: ${builtins.toJSON tools-all.nixremote.archPackages}")
+
+    (check "tools/nixos-resolves-sshpass-through-nixpkgs"
+      (builtins.elem "sshpass" (map lib.getName tools-nixos.environment.systemPackages))
+      "got: ${builtins.toJSON (map lib.getName tools-nixos.environment.systemPackages)}")
 
     # Non-vacuity: an unknown transport name must be REJECTED at eval time (the `enum` type in
     # tools.nix's `mkGroup`), the same "typo is an error, not a silent no-op" contract nixdev's

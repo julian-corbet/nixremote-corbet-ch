@@ -18,12 +18,15 @@ network-topology-aware layer around it: which address to reach a peer at
 (you're not always on the same LAN), and reproducing all of it from a single
 Nix config instead of hand-written fish functions and `~/.ssh/config` edits.
 
-**nixremote** is that layer. One module, `nixremote.forward.<peer>`:
-package provisioning (straight from nixpkgs — no AUR, no pacman, no
-dependency on any particular system-management layer), an ordered
+**nixremote** is that layer. One module, `nixremote.forward.<peer>`: an ordered
 address cascade (native OpenSSH `Match ... exec` blocks — try the fast LAN
 address first, fall back to a VPN/overlay address when you're not home),
 and a wrapper script around waypipe's own `ssh` mode.
+
+Transport binaries use the same declarative `nixremote.transport` catalogue on
+each platform: `nixosModules.tools` resolves the matching nixpkgs derivations
+into `environment.systemPackages`; `systemManagerModules.default` publishes the
+official-repository and AUR package names separately for an Arch reconciler.
 
 It's deliberately **not** coupled to [nixarch](https://github.com/julian-corbet/nixarch-corbet-ch)
 — nixarch's job is making sure a machine has a working Wayland compositor and
@@ -353,14 +356,15 @@ persistent hbbs keypair/database).
 
 | Path | Purpose |
 |---|---|
-| `flake.nix` | Flake entry point; exports `homeManagerModules.{forward,fishDispatch,sunshine,moonlight,console}` and `nixosModules.rustdesk`. |
+| `flake.nix` | Flake entry point; exports `homeManagerModules.{forward,fishDispatch,sunshine,moonlight,console}`, `nixosModules.{rustdesk,tools}`, and the Arch system-manager module. |
 | `home/forward.nix` | The core module — package provisioning, address cascade, wrapper scripts, keepalive, orphan reaping. See its header comment for the full design rationale and gotchas. |
 | `home/fish-dispatch.nix` | Optional `<app>@<peer>` fish integration, layered on top of `forward`. |
 | `home/sunshine.nix` | The inverse direction — declarative Sunshine (LizardByte) desktop/game streaming host, serving THIS machine's Wayland session to a remote Moonlight client. |
 | `home/moonlight.nix` | The VIEWER half of the streaming pair `sunshine` serves — a transport client (bitrate/codec/latency settings), not a player. Deliberately does not manage Moonlight's own pairing state, which is runtime, not config — see the module's own header. |
 | `home/console.nix` | The "full session in a browser" leg — declarative wayvnc + noVNC. See ["Full session in a browser"](#full-session-in-a-browser-wayvnc--novnc) above and the module's own header (wlroots-only capability boundary, secrets-as-files handling, the `WLR_RENDERER=pixman` precondition it cannot set for you). |
 | `modules/rustdesk.nix` | Self-hosted RustDesk server (hbbs+hbbr), a single podman container. NixOS-only — see "Self-hosted RustDesk server" above. |
-| `checks/default.nix` | Eval-time tests for `nixosModules.rustdesk` (no VM, no container start — module evaluation only). |
+| `modules/{tools,nixos-tools,system-manager}.nix` | Platform-neutral transport catalogue plus NixOS and Arch/CachyOS package-resolution backends. |
+| `checks/default.nix` | Eval-time tests for the NixOS modules and transport catalogue (no VM, no container start — module evaluation only). |
 | `experiments/` | Throwaway trials — see [`experiments/README.md`](experiments/README.md). |
 | `studies/` | Written-up findings — see [`studies/README.md`](studies/README.md). |
 

@@ -66,10 +66,15 @@
         default = self.homeManagerModules.forward;
       };
 
-      # The one NixOS module here: a self-hosted RustDesk rendezvous+relay server is a
-      # host-level, root-owned, always-on service, unlike the per-user home-manager modules
-      # above (forward/fish-dispatch/sunshine) -- see the module's own header for the full shape.
-      nixosModules.rustdesk = ./modules/rustdesk.nix;
+      nixosModules = {
+        # A self-hosted RustDesk rendezvous+relay server is a host-level, root-owned, always-on
+        # service, unlike the per-user home-manager modules above.
+        rustdesk = ./modules/rustdesk.nix;
+
+        # Resolves nixremote.transport through nixpkgs on NixOS. The identical catalogue is
+        # consumed by systemManagerModules.default on Arch/CachyOS.
+        tools = ./modules/nixos-tools.nix;
+      };
 
       # Arch/CachyOS plane: declares this repo's binaries into nixarch's package reconciler. Kept
       # separate from the home-manager modules because system-manager and home-manager are
@@ -88,6 +93,7 @@
           # The Arch plane, tools.nix included (system-manager.nix imports it) -- see
           # checks/default.nix's own tools/* section for what is under test.
           toolsModule = self.systemManagerModules.default;
+          toolsNixosModule = self.nixosModules.tools;
           # Unlike nixdesktop (not an input -- home/sunshine.nix's own probe against it stays a
           # defensive, zero-flake-dependency read regardless of whether nixdesktop is composed),
           # nixhost genuinely IS a flake input, so `nix flake check` gets the real, locked
