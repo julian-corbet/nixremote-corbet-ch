@@ -36,12 +36,14 @@ let
 
   # ── system-manager plane: modules/tools.nix (openssh/waypipe), via toolsModule ──────────────
   #
-  # Stub of the one option system-manager.nix's PRE-EXISTING moonlight branch reaches for
-  # (`nixarch.packages.pacman`) -- the module system needs the option DECLARED to accept an
-  # assignment to it even when `lib.mkIf cfg.moonlight.enable` makes the value conditional, so a
-  # bare `lib.evalModules` of toolsModule fails without this even with moonlight left off.
+  # Stub of the two options system-manager.nix's `install.*` branches reach for
+  # (`nixarch.packages.pacman` for moonlight, `nixarch.packages.aur` for rustdesk) -- the module
+  # system needs BOTH options DECLARED to accept an assignment to them even when
+  # `lib.mkIf cfg.<app>.enable` makes each value conditional, so a bare `lib.evalModules` of
+  # toolsModule fails without this even with both branches left off.
   nixarchStub = { lib, ... }: {
     options.nixarch.packages.pacman = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
+    options.nixarch.packages.aur = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
   };
 
   evalTools = extraConfig: (lib.evalModules {
@@ -55,6 +57,15 @@ let
   tools-both = evalTools { nixremote.transport = [ "openssh" "waypipe" ]; };
   tools-all = evalTools { nixremote.transport = [ "openssh" "waypipe" "freerdp" "sshpass" ]; };
   tools-nixos = evalNixosModules [ bareStubs toolsNixosModule { nixremote.transport = [ "sshpass" ]; } ];
+
+  # ── install.*: moonlight/rustdesk, sharing toolsModule's own eval harness (`evalTools`) since
+  # both live in the same file (modules/system-manager.nix) that imports ./tools.nix. Exercises the
+  # `lib.mkIf` → `lib.mkMerge` change this task made directly: proves the two branches (pacman vs.
+  # aur) write independently and neither clobbers the other when both are enabled together.
+  install-none = evalTools { };
+  install-moonlight = evalTools { nixremote.install.moonlight.enable = true; };
+  install-rustdesk = evalTools { nixremote.install.rustdesk.enable = true; };
+  install-both = evalTools { nixremote.install = { moonlight.enable = true; rustdesk.enable = true; }; };
 
   cfg-baseline = evalNixosModules [ bareStubs ];
   cfg-bare = evalNixosModules [ bareStubs rustdeskModule ];
@@ -560,11 +571,29 @@ let
       (toolsBuildFails { nixremote.transport = [ "tssh" ]; })
       "nixremote.transport naming a key tools.nix's catalogue does not have (\"tssh\" -- deliberately never added, see modules/system-manager.nix's header) must fail evaluation instead of silently resolving to nothing, but it succeeded")
   ];
+
+  installResults = [
+    (check "install/neither-enabled-writes-nothing"
+      (install-none.nixarch.packages.pacman == [ ] && install-none.nixarch.packages.aur == [ ])
+      "nixremote.install.moonlight/rustdesk both left at their default (disabled) must write to neither nixarch.packages.pacman nor .aur -- got pacman: ${builtins.toJSON install-none.nixarch.packages.pacman}, aur: ${builtins.toJSON install-none.nixarch.packages.aur}")
+
+    (check "install/moonlight-enabled-writes-only-pacman"
+      (install-moonlight.nixarch.packages.pacman == [ "moonlight-qt" ] && install-moonlight.nixarch.packages.aur == [ ])
+      "moonlight.enable = true must write \"moonlight-qt\" to nixarch.packages.pacman and leave .aur empty -- got pacman: ${builtins.toJSON install-moonlight.nixarch.packages.pacman}, aur: ${builtins.toJSON install-moonlight.nixarch.packages.aur}")
+
+    (check "install/rustdesk-enabled-writes-only-aur"
+      (install-rustdesk.nixarch.packages.aur == [ "rustdesk-bin" ] && install-rustdesk.nixarch.packages.pacman == [ ])
+      "rustdesk.enable = true must write \"rustdesk-bin\" to nixarch.packages.aur and leave .pacman empty -- rustdesk-bin has no official-repo build (see modules/system-manager.nix's header), so a regression that routed it to .pacman instead would abort pacman's whole transaction on a real host -- got aur: ${builtins.toJSON install-rustdesk.nixarch.packages.aur}, pacman: ${builtins.toJSON install-rustdesk.nixarch.packages.pacman}")
+
+    (check "install/both-enabled-write-independently-neither-clobbers-the-other"
+      (install-both.nixarch.packages.pacman == [ "moonlight-qt" ] && install-both.nixarch.packages.aur == [ "rustdesk-bin" ])
+      "both enabled together must produce BOTH writes intact -- the config block changed from a single lib.mkIf to lib.mkMerge specifically to allow this, and a botched merge could silently drop one branch -- got pacman: ${builtins.toJSON install-both.nixarch.packages.pacman}, aur: ${builtins.toJSON install-both.nixarch.packages.aur}")
+  ];
 in
 {
   eval-tests =
     let
-      allResults = results ++ hmResults ++ forwardResults ++ toolsResults ++ [
+      allResults = results ++ hmResults ++ forwardResults ++ toolsResults ++ installResults ++ [
         (check "console/disabled-instance-adds-no-units"
           (consoleServiceNames console-disabled == [ ])
           "enable = false must add zero systemd --user units -- got: ${builtins.toJSON (consoleServiceNames console-disabled)}")
