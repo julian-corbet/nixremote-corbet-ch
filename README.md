@@ -352,13 +352,77 @@ persistent hbbs keypair/database).
 }
 ```
 
+## A launcher whose tabs are machines
+
+`fishDispatch` above answers "run *this* on *that* machine" — you have to already know what that
+machine has. `nixremote.launcher` answers the other half: **what does it have?**
+
+It is a rofi script mode, one mode per machine, application categories inside each. Open it, click
+(or arrow to) another machine's tab, and you are looking at that machine's real application list,
+read live off its own `.desktop` files. Pick one and it opens on your screen, forwarded, as an
+ordinary window. Or type `firefox.archlxc` and skip the tabs entirely.
+
+```nix
+imports = [
+  inputs.nixremote.homeManagerModules.forward
+  inputs.nixremote.homeManagerModules.launcher
+];
+
+nixremote.launcher = {
+  enable = true;
+  hosts = [
+    { name = "local"; local = true; }   # this machine
+    { name = "archlxc"; }               # a nixremote.forward peer of the same name
+    { name = "devhome"; }
+  ];
+  categories = [
+    { label = "Terminals"; tags = [ "TerminalEmulator" ]; }
+    { label = "Code";      tags = [ "Development" ]; }
+    { label = "System";    tags = [ "System" "Settings" ]; }
+  ];
+};
+```
+
+Bind a key or a bar button to `config.nixremote.launcher.command`.
+
+**Both lists are ordered, and both orders are load-bearing.** `hosts` is the tab bar, left to right,
+and its first entry is the tab the launcher opens on. `categories` is a priority list — the *first*
+group whose tags match wins, so `TerminalEmulator` must come before `System` or every terminal
+emulator lands under System. That is why neither is an attrset: an attrset would alphabetise them
+and quietly change the result.
+
+**It launches through `forward`, it does not reimplement it.** A tab named `archlxc` refers to
+`nixremote.forward.archlxc`, and a pick execs that peer's own generated wrapper. So the launcher
+inherits the address cascade, audio return, video codec, orphan reaping and origin marking for free,
+and spawns no `waypipe` of its own.
+
+That last one is worth being explicit about, because it is where a launcher is most tempted to
+invent something. Marking a forwarded window with the machine it came from is the **compositor's**
+job: the wrapper already rewrites a forwarded app's `app_id` to `<app>@<peer>`, so one
+`for_window [app_id="@archlxc$"]` rule gives every window from that machine a badge and a coloured
+frame — whether it was launched from this launcher, from a shell, or from anything else. This module
+therefore has no colour option at all.
+
+**The inventory is a cache, not a store.** There is no database of remote applications. Each machine
+already maintains an authoritative list of its own — its `.desktop` files — so the inventory is read
+live over SSH and kept in `$XDG_RUNTIME_DIR` for `cacheTtl` seconds. It dies with the boot.
+
+**rofi specifically**, and not something sharper: it is the only menu with a *mode-switcher*, which
+is what makes machines into clickable tabs at all. rofi permits exactly one per layout, which is
+also why machines get that axis and categories are one keystroke in.
+
+`iconSync.enable = true` additionally pulls icons a remote machine has and this one does not, in the
+background as the launcher opens — without it a remote-only application shows a generic placeholder,
+because the icon *name* in its `.desktop` file resolves against the *local* icon theme.
+
 ## Repository layout
 
 | Path | Purpose |
 |---|---|
-| `flake.nix` | Flake entry point; exports `homeManagerModules.{forward,fishDispatch,sunshine,moonlight,console}`, `nixosModules.{rustdesk,tools}`, and the Arch system-manager module. |
+| `flake.nix` | Flake entry point; exports `homeManagerModules.{forward,fishDispatch,launcher,sunshine,moonlight,console,rustdeskClient}`, `nixosModules.{rustdesk,tools}`, and the Arch system-manager module. |
 | `home/forward.nix` | The core module — package provisioning, address cascade, wrapper scripts, keepalive, orphan reaping. See its header comment for the full design rationale and gotchas. |
 | `home/fish-dispatch.nix` | Optional `<app>@<peer>` fish integration, layered on top of `forward`. |
+| `home/launcher.nix` | **rlaunch** — a launcher whose tabs are MACHINES. See ["A launcher whose tabs are machines"](#a-launcher-whose-tabs-are-machines) below. |
 | `home/sunshine.nix` | The inverse direction — declarative Sunshine (LizardByte) desktop/game streaming host, serving THIS machine's Wayland session to a remote Moonlight client. |
 | `home/moonlight.nix` | The VIEWER half of the streaming pair `sunshine` serves — a transport client (bitrate/codec/latency settings), not a player. Deliberately does not manage Moonlight's own pairing state, which is runtime, not config — see the module's own header. |
 | `home/console.nix` | The "full session in a browser" leg — declarative wayvnc + noVNC. See ["Full session in a browser"](#full-session-in-a-browser-wayvnc--novnc) above and the module's own header (wlroots-only capability boundary, secrets-as-files handling, the `WLR_RENDERER=pixman` precondition it cannot set for you). |

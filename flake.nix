@@ -63,6 +63,15 @@
         # pointing a client at a server depends on which compositor is running.
         rustdeskClient = ./home/rustdesk-client.nix;
 
+        # nixremote.launcher -- rlaunch: an application launcher whose TABS ARE MACHINES. Each tab
+        # lists a peer's real inventory, read live off its own .desktop files over SSH, and a pick
+        # launches through that peer's own `forward` wrapper above. It is here, and not in a
+        # desktop/launcher repo, because "which machines can I reach and how" is exactly what
+        # `nixremote.forward` already knows -- a tab is a forward peer with a list attached. It
+        # spawns no waypipe of its own and has no colour option: origin marking is the
+        # compositor's job, driven by the app_id tag the forward wrapper already applies.
+        launcher = ./home/launcher.nix;
+
         default = self.homeManagerModules.forward;
       };
 
@@ -88,6 +97,7 @@
           inherit lib system;
           rustdeskModule = self.nixosModules.rustdesk;
           inherit sunshineModule forwardModule;
+          launcherModule = self.homeManagerModules.launcher;
           consoleModule = self.homeManagerModules.console;
           rustdeskClientModule = self.homeManagerModules.rustdeskClient;
           # The Arch plane, tools.nix included (system-manager.nix imports it) -- see
