@@ -146,6 +146,8 @@ let
       # home-manager declares this for real; the launcher module derives the config path it bakes
       # into its own generated scripts from it.
       xdg.configHome = lib.mkOption { type = lib.types.str; default = "/home/u/.config"; };
+      # home-manager declares this for real; forward.nix builds the known_hosts path from it.
+      home.homeDirectory = lib.mkOption { type = lib.types.str; default = "/home/u"; };
       xdg.configFile = lib.mkOption { type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything); default = { }; };
       systemd.user.services = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
       systemd.user.targets = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
@@ -721,6 +723,37 @@ let
       (let t = rEntry launcher-basic; in
       !(lib.hasInfix "--flat" t) && lib.hasInfix "archlxc:" t)
       "the two views answer different questions and must not collapse into each other: the bar button is still the tabbed, categorised, discovery one")
+
+    (check "forward/a-declared-host-key-lands-under-the-ALIAS-not-an-address"
+      (let cfg = evalHm [ forwardModule {
+             nixremote.forward.devhome = {
+               addresses = [{ address = "192.168.0.6"; }];
+               hostPublicKey = "ssh-ed25519 AAAATESTKEY";
+             };
+           } ];
+           kh = cfg.home.file.".ssh/conf.d/nixremote_known_hosts".text or ""; in
+      lib.hasInfix "nixremote-devhome ssh-ed25519 AAAATESTKEY" kh
+        && !(lib.hasInfix "192.168.0.6 ssh-ed25519" kh))
+      "HostKeyAlias is what the generated blocks verify against, so an entry keyed on the ADDRESS does not satisfy them -- that mismatch fails with `Host key verification failed` on a host whose own known_hosts already trusts the very same machine by IP")
+
+    (check "forward/the-users-own-known_hosts-is-still-read"
+      (let cfg = evalHm [ forwardModule {
+             nixremote.forward.devhome = {
+               addresses = [{ address = "192.168.0.6"; }];
+               hostPublicKey = "ssh-ed25519 AAAATESTKEY";
+             };
+           } ];
+           conf = cfg.home.file.".ssh/conf.d/nixremote.conf".text; in
+      lib.hasInfix "UserKnownHostsFile" conf && lib.hasInfix "/.ssh/known_hosts " conf)
+      "UserKnownHostsFile REPLACES the default rather than adding to it, so naming only the generated file would make every host the user already trusts unknown again")
+
+    (check "forward/no-declared-key-generates-no-file-and-no-directive"
+      (let cfg = evalHm [ forwardModule {
+             nixremote.forward.devhome.addresses = [{ address = "192.168.0.6"; }];
+           } ]; in
+      !(cfg.home.file ? ".ssh/conf.d/nixremote_known_hosts")
+        && !(lib.hasInfix "UserKnownHostsFile" cfg.home.file.".ssh/conf.d/nixremote.conf".text))
+      "a peer that declares no key must leave verification entirely to the user's own known_hosts -- writing a directive there anyway would imply this module manages verification on hosts where it does not")
 
     (check "launcher/disabled-writes-no-config-and-installs-nothing"
       (launcher-off.xdg.configFile == { } && launcher-off.home.packages == [ ])

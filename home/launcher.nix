@@ -673,6 +673,19 @@ let
             stem = (ic if not ic.startswith("/")
                     else os.path.splitext(os.path.basename(ic))[0])
             names = {n for n in (stem, base, binary) if n}
+            # THE ORIGIN-TAGGED NAMES, which are the whole reason a dock shows a
+            # placeholder for a forwarded window. nixremote's forward wrapper rewrites
+            # an app's own id to "<app>@<peer>" so the compositor can mark where the
+            # window came from -- and an icon lookup is BY THAT ID. No icon theme has
+            # ever heard of "foot@devhome", so a taskbar or dock falls through to its
+            # own icon-missing artwork, which reads as an error rather than as a
+            # window from another machine.
+            #
+            # Writing each alias a second time under "<alias>@<host>" closes that: the
+            # forwarded window finds the same icon its local twin uses. Costs one extra
+            # copy of a few-KB svg per app, and only for apps this host does not
+            # already have -- the local-shadowing guard below applies to these too.
+            names |= {f"{n}@{host_name}" for n in names}
             # PER-ALIAS, not all-or-nothing. Skipping an app only when EVERY alias
             # resolved meant one missing alias caused all of them to be written,
             # which shadowed local system icons (foot, thunar, Nautilus...) with a
