@@ -446,10 +446,20 @@ let
         state = os.environ.get("ROFI_DATA", "")
         log(f"RETV={retv} DATA=[{state}] argv={sys.argv[1:]}")
         c = cfg()
+
+        # Leading flags are stripped before the positional arguments, because rofi APPENDS the
+        # selection to whatever command line the mode was declared with — so the flag has to sit
+        # in front of the host name, where rofi will never touch it.
+        args = sys.argv[1:]
+        flat = False
+        while args and args[0].startswith("--"):
+            if args.pop(0) == "--flat":
+                flat = True
+
         hosts = {h["name"]: h for h in c["hosts"]}
         fallback = next(h for h in c["hosts"] if h.get("local"))
-        host = hosts.get(sys.argv[1] if len(sys.argv) > 1 else "", fallback)
-        sel = sys.argv[2] if len(sys.argv) > 2 else ""
+        host = hosts.get(args[0] if args else "", fallback)
+        sel = args[1] if len(args) > 1 else ""
         cats = c.get("categories", [])
         layout = c.get("layout", {})
 
@@ -489,6 +499,38 @@ let
             print(BACK)
             for a in grouped.get(cat, []):
                 print(a["name"])
+
+        # FLAT MODE: every application at once, no groups to drill into. This is the shape a
+        # keystroke-launcher wants — you already know the name, you are typing it, and a category
+        # list is a screen of things you have to dismiss first. The grouped view stays for the
+        # other question ("what does this machine even have?"), which is what the bar button is
+        # for.
+        def show_flat(note=""):
+            meta("prompt", host["name"])
+            meta("message", note or f"<b>{host['name']}</b> — {len(apps)} apps")
+            for a in apps:
+                print(a["name"])
+
+        if flat:
+            if typed_error:
+                show_flat(typed_error)
+                return
+            if retv == 1 and sel:
+                for a in apps:
+                    if a["name"] == sel:
+                        launch(a, host, layout)
+                        return
+                # An unrecognised pick is not necessarily a miss: with `-matching fuzzy` the row
+                # text can differ from any exact name. Fall back to the same resolver typing uses,
+                # so a selection never silently does nothing.
+                app, h = resolve_typed(c, sel, host)
+                if app:
+                    launch(app, h, layout)
+                    return
+                show_flat(f"no app matching <b>{sel}</b>")
+                return
+            show_flat()
+            return
 
         if typed_error:
             show_categories(typed_error)
@@ -720,6 +762,25 @@ let
 
   remoteHosts = lib.filter (h: !h.local) resolvedHosts;
   firstHost = if cfg.hosts == [ ] then "local" else (lib.head cfg.hosts).name;
+  localHost =
+    let l = lib.filter (h: h.local) cfg.hosts;
+    in if l == [ ] then "local" else (lib.head l).name;
+
+  # The quick view's theme is the same slab with the tab bar taken out of `children:`. Removing it
+  # is not cosmetic tidying: rofi still DRAWS a mode-switcher for a single mode, so leaving it in
+  # gives a flat launcher one full-width button labelled with the machine you are already on.
+  quickThemeText = themeText + ''
+
+    /* the quick view declares ONE mode, so the switcher would be a button naming the machine you
+       are already on -- drawn, clickable, and carrying no information */
+    mainbox {
+        orientation: vertical;
+        spacing:     10px;
+        children:    [ inputbar, message, listview ];
+    }
+  '';
+
+  quickThemeFile = pkgs.writeText "rlaunch-quick.rasi" quickThemeText;
 
   showText = ''
     # Entry point: one rofi mode per configured machine, and a background warm of
@@ -739,6 +800,33 @@ let
   '';
 
   show = pkgs.writeShellScriptBin "rlaunch-show" showText;
+
+  # ── the quick view ──────────────────────────────────────────────────────────────────────────
+  #
+  # THE OTHER QUESTION. `rlaunch-show` above answers "what does this machine have?" — tabs,
+  # categories, discovery. This answers "open the thing I am already typing", which is a different
+  # job and wants an opposite shape: one flat list, no groups to dismiss, and open NOW.
+  #
+  # LOCAL ONLY, AND NO WARM-UP, both deliberate and both for the same reason. This is meant to sit
+  # on a keystroke, and a keystroke launcher that fires SSH round trips to every peer on every
+  # press is not one — it would spend a network timeout to populate tabs nobody opened. So it
+  # declares a single mode, the local one, and skips the inventory warming entirely: the local
+  # inventory is a filesystem read.
+  #
+  # THE CROSS-MACHINE POWER SURVIVES ANYWAY, which is what makes this cheap rather than a
+  # reduction. Typing `firefox` launches locally; typing `firefox.archlxc` still resolves through
+  # the same dot-notation path and launches there. The SSH cost is paid only by someone who
+  # actually asked for another machine, at the moment they ask.
+  quickText = ''
+    # GENERATED by nixremote's homeManagerModules.launcher. The quick, flat, local view -- see the
+    # module's own header for why it declares one mode and warms nothing.
+    exec ${cfg.rofiCommand} \
+      -show ${lib.escapeShellArg localHost} \
+      -modi ${lib.escapeShellArg "${localHost}:${rlaunch}/bin/rlaunch --flat ${localHost}"} \
+      -theme ${quickThemeFile}
+  '';
+
+  quick = pkgs.writeShellScriptBin "rlaunch-quick" quickText;
 
   # `{ config, ... }` and no `name`: a `listOf submodule` passes no `name` argument (only
   # `attrsOf` does), which is why the tab's own name is a stated option here rather than a key.
@@ -1044,6 +1132,38 @@ in
         default = showText;
         description = "The generated entry point, as text: the mode list, the warm-up, the rofi call.";
       };
+
+      quick = lib.mkOption {
+        type = lib.types.lines;
+        readOnly = true;
+        default = quickText;
+        description = "The quick view's entry point, as text.";
+      };
+
+      quickTheme = lib.mkOption {
+        type = lib.types.lines;
+        readOnly = true;
+        default = quickThemeText;
+        description = "The quick view's rasi, as text: the same slab with the tab bar removed.";
+      };
+    };
+
+    quickCommand = lib.mkOption {
+      type = lib.types.str;
+      readOnly = true;
+      default = "${quick}/bin/rlaunch-quick";
+      description = ''
+        The QUICK view's entry point, as an absolute path: one flat list of this machine's own
+        applications, no tabs and no categories, and no remote inventory fetched on open.
+
+        Bind this to a keystroke, and bind `command` to a bar button or a dock icon. They answer
+        different questions — this one assumes you already know the name and are typing it, while
+        `command` is for finding out what a machine has. Typing `<app>.<machine>` here still
+        launches on that machine, so nothing is given up by making the fast path the local one.
+
+        This is the intended replacement for a separate lightweight launcher (fuzzel, wofi) bound
+        to the same key: one launcher, one theme, one set of hidden-application rules.
+      '';
     };
 
     command = lib.mkOption {
@@ -1092,7 +1212,7 @@ in
       })
       cfg.hosts);
 
-    home.packages = [ rlaunch show ] ++ lib.optional cfg.iconSync.enable rlaunchIcons;
+    home.packages = [ rlaunch show quick ] ++ lib.optional cfg.iconSync.enable rlaunchIcons;
 
     xdg.configFile."rlaunch/config.toml".source = configFile;
   };

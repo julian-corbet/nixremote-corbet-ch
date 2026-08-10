@@ -707,6 +707,23 @@ let
         && lib.hasInfix "rlaunch-icons" (rEntry launcher-icons))
       "fetching another machine's icons writes into this one's icon theme, so it must not happen unless it was asked for")
 
+    (check "launcher/the-quick-view-declares-ONE-mode-and-warms-nothing"
+      (let t = launcher-basic.nixremote.launcher.rendered.quick; in
+      lib.hasInfix "--flat" t
+        && !(lib.hasInfix ">/dev/null 2>&1 &" t)
+        && !(lib.hasInfix "archlxc:" t) && !(lib.hasInfix "devhome:" t))
+      "the quick view sits on a keystroke, so it must declare only the local mode and fire no SSH round trips on open -- a launcher that warms three peers before drawing is not a keystroke launcher")
+
+    (check "launcher/the-quick-view-drops-the-mode-switcher-from-the-theme"
+      (let t = launcher-basic.nixremote.launcher.rendered.quickTheme; in
+      lib.hasInfix "children:    [ inputbar, message, listview ]" t)
+      "rofi still DRAWS a mode-switcher for a single mode, so leaving it in gives the flat launcher one full-width button naming the machine you are already on")
+
+    (check "launcher/the-grouped-view-is-unchanged-and-still-has-its-tabs"
+      (let t = rEntry launcher-basic; in
+      !(lib.hasInfix "--flat" t) && lib.hasInfix "archlxc:" t)
+      "the two views answer different questions and must not collapse into each other: the bar button is still the tabbed, categorised, discovery one")
+
     (check "launcher/disabled-writes-no-config-and-installs-nothing"
       (launcher-off.xdg.configFile == { } && launcher-off.home.packages == [ ])
       "enable = false must leave no config file and no packages -- got files: ${builtins.toJSON (lib.attrNames launcher-off.xdg.configFile)}")

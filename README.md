@@ -383,7 +383,20 @@ nixremote.launcher = {
 };
 ```
 
-Bind a key or a bar button to `config.nixremote.launcher.command`.
+**Two views, two questions.** Bind them to different things:
+
+| | `config.nixremote.launcher.command` | `config.nixremote.launcher.quickCommand` |
+|---|---|---|
+| answers | *what does this machine have?* | *open the thing I am already typing* |
+| shape | machine tabs, categories inside | one flat list, no tabs, no groups |
+| scope | every configured machine | this machine only |
+| on open | warms every remote inventory | reads the local disk, no SSH at all |
+| bind to | a bar button or dock icon | a keystroke |
+
+`quickCommand` is the intended replacement for a separate lightweight launcher (fuzzel, wofi) on
+the same key — one launcher, one theme, one set of hidden-application rules. It gives up nothing:
+typing `firefox.archlxc` there still launches on that machine, so the SSH cost is paid only by
+someone who actually asked for another machine, at the moment they ask.
 
 **Both lists are ordered, and both orders are load-bearing.** `hosts` is the tab bar, left to right,
 and its first entry is the tab the launcher opens on. `categories` is a priority list — the *first*
