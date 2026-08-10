@@ -38,14 +38,19 @@ on Nix and can grow a Wayland session.
 
 ## Status
 
-**Pre-alpha.** Five modules now (`forward`, `fishDispatch`, `sunshine`, `moonlight`, `console`), plus
-the standalone `nixosModules.rustdesk`; `console` (wayvnc + noVNC) is the newest and, unlike the
-others below, has real eval-time test coverage — `checks/default.nix` exercises its attrsOf wiring,
-unit shape, the auth/tls coupling assertion, and the actual *rendered command text* of every
-generated script (not just option values), including regression tests for two real defects a
-text-blind check missed the first time (a `--` that silently swallowed every trailing CLI argument,
-and `--vnc` being handed the wrong address — the BIND address instead of the one to actually DIAL).
-Not yet exercised anywhere outside this repo's own checks: no host has enabled it yet.
+**Pre-alpha.** Seven home-manager modules (`forward`, `fishDispatch`, `launcher`, `sunshine`,
+`moonlight`, `console`, `rustdeskClient`), plus the standalone `nixosModules.rustdesk`; `console`
+(wayvnc + noVNC) is the newest and, unlike the others below, has real eval-time test coverage —
+`checks/default.nix` exercises its attrsOf wiring, unit shape, the auth/tls coupling assertion, and
+the actual *rendered command text* of every generated script (not just option values), including
+regression tests for two real defects a text-blind check missed the first time (a `--` that silently
+swallowed every trailing CLI argument, and `--vnc` being handed the wrong address — the BIND address
+instead of the one to actually DIAL). It also runs in production — both legs, wayvnc and its noVNC
+front end — against a session confined to software rendering (`WLR_RENDERER=pixman`) because that
+machine's
+only DRM render node belongs to a GPU that session must not touch — precisely the case its own
+["One precondition this module cannot set for you"](#full-session-in-a-browser-wayvnc--novnc) note
+describes.
 
 `forward` — extracted from and replacing a
 one-off manual setup (packages installed by hand, exactly one direction
@@ -126,7 +131,9 @@ Include ~/.ssh/conf.d/nixremote.conf
 ```
 
 See [`home/forward.nix`](home/forward.nix) for the full option reference —
-`user`, `scriptName`, `binary`/`package` (which waypipe runs, and who
+`user`, `scriptName`, `apps` (publish named apps as real `<app>@<peer>` /
+`<app>.<peer>` executables — see the dispatch section below),
+`binary`/`package` (which waypipe runs, and who
 provides it — see Status above for why the module refuses to choose),
 `video` (hardware-encode motion content — `none`/`h264`/
 `vp9`/`av1`, defaults to `h264`; see Status above for why the default
@@ -140,6 +147,33 @@ actually are — see its own section below), and
 
 ### `<app>@<peer>` dispatch
 
+Two mechanisms carry the `tmux@<host>`/`zellij@<host>` spelling this family already uses, and the
+difference between them is the exit status.
+
+**`apps` — real executables, any shell.** Naming an app under `nixremote.forward.<peer>.apps`
+publishes it as a genuine script on `$PATH`, in both spellings — `<app>@<peer>` and `<app>.<peer>`:
+
+```nix
+{
+  imports = [ inputs.nixremote.homeManagerModules.forward ];
+
+  nixremote.forward.some-peer = {
+    addresses = [ { address = "192.168.1.10"; } ];
+    apps = [ "foot" "firefox" ];
+  };
+}
+```
+
+Each generated executable is a single `exec` into that peer's own `waypipe@<peer>` wrapper rather
+than a second rendering of it, so a named app inherits the address cascade, the audio return, the
+video codec, the origin marking and the orphan reaping automatically and can never drift from the
+generic path. Being an ordinary executable is the whole point: it runs identically from fish, bash
+and zsh, completes on Tab, and exits with the *app's* own status, so it is usable in `&&` chains,
+in scripts, and from any launcher that checks a result. The cost is that apps must be named here
+instead of being open-ended.
+
+**`fishDispatch` — open-ended, fish-only, and cannot report success.**
+
 ```nix
 {
   imports = [
@@ -152,13 +186,23 @@ actually are — see its own section below), and
 }
 ```
 
-With this enabled, `firefox@some-peer` (any app name, not just ones declared
-anywhere) works directly — matching the `tmux@<host>`/`zellij@<host>`
-convention already in use across hosts, without pre-declaring every app you
-might ever forward. Implemented as a `~/.config/fish/conf.d/*.fish` file, not
-`programs.fish.functions` — see [`home/fish-dispatch.nix`](home/fish-dispatch.nix)'s
-header for why (short version: a real machine's existing fish config, e.g.
-`cachyos-fish-config`, would otherwise get silently replaced).
+With this enabled any `<app>@<peer>` spelling launches — `firefox@some-peer` without `firefox`
+having been declared anywhere — by routing fish's `fish_command_not_found` hook into the peer's
+wrapper. **That hook cannot carry an exit status.** fish ignores whatever the handler returns, sets
+status 127 unconditionally, prints its own command-not-found error anyway, and redirects the
+handler's stdout onto stderr (measured on fish 4.8.1 against a handler whose entire body is
+`return 0`; fish's own man page describes the hook as a place to "print a message", not to run the
+command). The remote app genuinely starts and its window genuinely appears — but every invocation
+also emits a spurious error and reports failure, which breaks `&&` chains, scripts, and anything
+that inspects a status. So `fishDispatch` is the interactive fallback for apps you have not
+declared; `apps` is what makes a forwarded app a real command.
+
+`fishDispatch` is implemented as a `~/.config/fish/conf.d/*.fish` file, not
+`programs.fish.functions` — see [`home/fish-dispatch.nix`](home/fish-dispatch.nix)'s header for why
+(short version: home-manager's fish module takes `config.fish` over wholesale, which would silently
+replace a real machine's existing vendor fish config). One corollary of that placement: fish sources
+`conf.d/*.fish` *before* `config.fish`, so any `config.fish` on the machine that defines its own
+`fish_command_not_found` is sourced later and wins.
 
 ### Audio
 
@@ -248,13 +292,13 @@ reap.
 Planned, explicitly not built yet, and not guaranteed to happen — recorded
 honestly rather than left implicit:
 
-- **A merged local/remote app library.** The end goal: invoke an app by
-  name and it transparently runs wherever it actually lives — a local
-  binary if present, else forwarded from whichever peer has it — without
-  the caller needing to know or care which. This would mean scanning each
-  peer's `.desktop` entries over SSH and materializing merged launcher
-  entries wrapped in the right `waypipe@<peer>` invocation. Whether this
-  is actually needed in practice is genuinely open.
+- **Name-only resolution across machines.** `launcher` already scans each peer's `.desktop`
+  entries over SSH and opens a pick through that peer's own `waypipe@<peer>` wrapper, and
+  `apps` already publishes a named app as a real `<app>@<peer>` executable — but both still
+  make the caller name the machine. The unbuilt end goal is invoking an app by its bare name
+  and having it run wherever it actually lives — a local binary if present, else forwarded
+  from whichever peer has it — without the caller needing to know or care which. Whether
+  that ambiguity is actually wanted in practice is genuinely open.
 - A NixOS-module mirror of the home-manager module, for parity with how
   nixarch exports both, if a system-layer piece of this ever turns out to
   be needed (nothing here currently requires root).
@@ -434,11 +478,12 @@ because the icon *name* in its `.desktop` file resolves against the *local* icon
 |---|---|
 | `flake.nix` | Flake entry point; exports `homeManagerModules.{forward,fishDispatch,launcher,sunshine,moonlight,console,rustdeskClient}`, `nixosModules.{rustdesk,tools}`, and the Arch system-manager module. |
 | `home/forward.nix` | The core module — package provisioning, address cascade, wrapper scripts, keepalive, orphan reaping. See its header comment for the full design rationale and gotchas. |
-| `home/fish-dispatch.nix` | Optional `<app>@<peer>` fish integration, layered on top of `forward`. |
+| `home/fish-dispatch.nix` | Optional open-ended `<app>@<peer>` fish integration, layered on top of `forward`. Statusless by construction — see the dispatch section above; `forward`'s own `apps` is the mechanism for a real command. |
 | `home/launcher.nix` | **rlaunch** — a launcher whose tabs are MACHINES. See ["A launcher whose tabs are machines"](#a-launcher-whose-tabs-are-machines) below. |
 | `home/sunshine.nix` | The inverse direction — declarative Sunshine (LizardByte) desktop/game streaming host, serving THIS machine's Wayland session to a remote Moonlight client. |
 | `home/moonlight.nix` | The VIEWER half of the streaming pair `sunshine` serves — a transport client (bitrate/codec/latency settings), not a player. Deliberately does not manage Moonlight's own pairing state, which is runtime, not config — see the module's own header. |
 | `home/console.nix` | The "full session in a browser" leg — declarative wayvnc + noVNC. See ["Full session in a browser"](#full-session-in-a-browser-wayvnc--novnc) above and the module's own header (wlroots-only capability boundary, secrets-as-files handling, the `WLR_RENDERER=pixman` precondition it cannot set for you). |
+| `home/rustdesk-client.nix` | The client half — points THIS machine's RustDesk at a self-hosted server by UPSERTING only the keys it owns into `RustDesk2.toml`, leaving the app's own runtime-learned state intact. Renders no unit: RustDesk is a GUI a human launches. |
 | `modules/rustdesk.nix` | Self-hosted RustDesk server (hbbs+hbbr), a single podman container. NixOS-only — see "Self-hosted RustDesk server" above. |
 | `modules/{tools,nixos-tools,system-manager}.nix` | Platform-neutral transport catalogue plus NixOS and Arch/CachyOS package-resolution backends. |
 | `checks/default.nix` | Eval-time tests for the NixOS modules and transport catalogue (no VM, no container start — module evaluation only). |

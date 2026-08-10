@@ -367,6 +367,37 @@ let
         '';
       };
 
+      apps = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "foot" "firefox" ];
+        description = ''
+          Applications to publish as REAL executables on `$PATH`, one pair
+          per entry: `<app>@<peer>` and `<app>.<peer>`. Both spellings are
+          generated for every app, because both are in use — `@` matches
+          the `tmux@<host>`/`zellij@<host>` convention this repo already
+          follows, and `.` reads as the "app on that machine" address it
+          effectively is. They are the same script; pick per taste.
+
+          ── WHY THIS EXISTS, AND WHY `fishDispatch` CANNOT REPLACE IT ────
+          `nixremote.fishDispatch` routes the same `<app>@<peer>` spelling
+          through fish's `fish_command_not_found` hook. That hook CANNOT
+          carry a command's exit status: fish invokes it, ignores whatever
+          it returns, then reports the command as not-found anyway —
+          status 127, plus an error line. Verified on fish 4.8.1 against
+          a handler that does nothing but `return 0`; its own man page
+          calls the hook a place to "print a message", not to run the
+          command. So a dispatched app STARTS but every invocation still
+          reports failure, which breaks `&&` chains, scripts, and any
+          launcher that checks a status.
+
+          A real executable on `$PATH` has none of that: fish never
+          reaches command-not-found, the status is the app's own, it works
+          identically from bash and zsh, and it completes on Tab. The cost
+          is that apps must be named here rather than being open-ended.
+        '';
+      };
+
       binary = lib.mkOption {
         type = lib.types.str;
         default = "waypipe";
@@ -647,12 +678,24 @@ in
   };
 
   config = lib.mkIf (cfg != { }) {
-    assertions = lib.mapAttrsToList
+    assertions = (lib.mapAttrsToList
       (name: peer: {
         assertion = peer.addresses != [ ];
         message = "nixremote.forward.${name}.addresses must have at least one entry.";
       })
-      cfg;
+      cfg)
+      # An `apps` entry becomes an executable FILE NAME (`<app>@<peer>`, `<app>.<peer>`), so a
+      # value carrying a slash or whitespace does not produce a broken command -- it produces a
+      # derivation that fails to build, or a name no shell can invoke, with nothing pointing back
+      # at the declaration that caused it. Caught here, named, at eval time.
+      ++ (lib.concatLists (lib.mapAttrsToList
+        (name: peer: map
+          (app: {
+            assertion = app != "" && !(lib.hasInfix "/" app) && app == (lib.head (lib.splitString " " app));
+            message = "nixremote.forward.${name}.apps entry \"${app}\" is not usable as a command name: entries are rendered literally into the executables \"${app}@${name}\" and \"${app}.${name}\", so they must be non-empty and free of slashes and whitespace.";
+          })
+          peer.apps)
+        cfg));
 
     # Only surfaced when some peer's audio resolution is actually enabled (`audioConsumed`,
     # top-level `let`) — probeFact's own state (a)/(b) (nixaudio absent, or composed but
@@ -666,7 +709,7 @@ in
       # see `package`'s description for the Vulkan-loader failure that makes choosing one here
       # actively harmful on a non-NixOS host.
       ++ (lib.unique (lib.filter (p: p != null) (map (p: p.package) (lib.attrValues cfg))))
-      ++ (lib.mapAttrsToList
+      ++ (lib.concatLists (lib.mapAttrsToList
         (name: peer:
           let
             waypipeExe = peer.binary;
@@ -752,8 +795,8 @@ in
                   ;;
               '')
               appIdFlagTemplates);
-          in
-          pkgs.writeShellScriptBin peer.scriptName ''
+
+            peerScript = pkgs.writeShellScriptBin peer.scriptName ''
             extra_env="NIXREMOTE_PEER=${lib.escapeShellArg peer.sshAlias}"
             ${audioResolve}
 
@@ -778,9 +821,26 @@ in
             fi
 
             exec ${waypipeExe} ${lib.escapeShellArgs (videoFlag ++ compressFlag ++ peer.extraOptions)} --remote-bin ${lib.escapeShellArg waypipeExe} ssh ${lib.escapeShellArg peer.sshAlias} env $extra_env ''${app_cmd:+"$app_cmd"} ''${app_id_flag:+"$app_id_flag"} "$@"
-          ''
+          '';
+
+            # One REAL executable per (app, peer) pair, in both spellings — see `apps`' own
+            # option doc for why fish's command-not-found hook cannot do this job (it cannot
+            # carry an exit status, so a dispatched app starts and still reports 127).
+            #
+            # Each wrapper is a single `exec` into the peer script above rather than a second
+            # rendering of it, so everything that script already does — the audio resolution,
+            # the origin marking, the app_id tagging, and the whole address cascade behind
+            # `sshAlias` — applies to a named app automatically, and can never drift from the
+            # generic path by being reimplemented alongside it.
+            mkAppWrapper = app: sep:
+              pkgs.writeShellScriptBin "${app}${sep}${name}" ''
+                exec ${peerScript}/bin/${peer.scriptName} ${lib.escapeShellArg app} "$@"
+              '';
+          in
+          [ peerScript ]
+          ++ lib.concatMap (app: map (mkAppWrapper app) [ "@" "." ]) peer.apps
         )
-        cfg)
+        cfg))
       ++ (lib.mapAttrsToList
         (name: peer:
           pkgs.writeShellScriptBin "nixremote-reap-${name}" ''

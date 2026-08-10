@@ -8,13 +8,40 @@
 # home-manager's own fish module (`programs.fish.enable` + `.functions`)
 # takes over `~/.config/fish/config.fish` WHOLESALE — the same class of risk
 # as `programs.ssh.enable` in forward.nix. A real machine can have a
-# substantial vendor fish config already in play (e.g. `cachyos-fish-config`
-# defines its OWN `fish_command_not_found`, inline in `config.fish`) that
-# would be silently destroyed by handing the whole file to home-manager. So
-# this module writes directly to `~/.config/fish/conf.d/nixremote-dispatch.fish`
-# instead — fish's own standard, safe extension point: every `conf.d/*.fish`
-# file is sourced on every shell startup, AFTER `config.fish`, entirely
-# independent of whether `programs.fish.enable` is set at all.
+# substantial vendor or hand-written fish config already in play, and handing
+# the whole file to home-manager would silently destroy it. So this module
+# writes directly to `~/.config/fish/conf.d/nixremote-dispatch.fish` instead
+# — fish's own standard extension point: every `conf.d/*.fish` file is
+# sourced on every shell startup, entirely independent of whether
+# `programs.fish.enable` is set at all.
+#
+# ── LIMIT OF THAT PLACEMENT: conf.d is sourced BEFORE config.fish ──────────
+# Not after. (Verified on fish 4.8.1 with a throwaway XDG_CONFIG_HOME holding
+# both a config.fish and a conf.d/*.fish, each echoing and each defining
+# `fish_command_not_found`: conf.d printed first, and the handler that fired
+# on an unknown command was the config.fish one.) So conf.d protects an
+# existing config.fish from being clobbered — the risk this module is
+# avoiding — but does NOT protect this handler from the reverse: any
+# config.fish that defines its own `fish_command_not_found` is sourced later
+# and replaces this one outright. Nothing inside conf.d can fix that
+# ordering; a machine in that situation has to stop defining the function in
+# its config.fish, or make that definition do this dispatch itself.
+#
+# ── HARD LIMIT: this hook can never report an exit status ─────────────────
+# fish calls `fish_command_not_found` and then IGNORES whatever it returns:
+# the command's status is 127 unconditionally, fish prints its own
+# command-not-found error on top of whatever the handler already printed, and
+# the handler's stdout is redirected onto stderr. Verified on fish 4.8.1
+# against a handler whose entire body is `return 0`; fish's own man page
+# describes the hook as a place to "print a message", not a place to run a
+# command. So a dispatched app really does launch and its window really does
+# appear, yet every invocation also emits a spurious error and reports
+# failure — unusable in `&&` chains, in scripts, or from anything that
+# inspects a status. This module is therefore the OPEN-ENDED, INTERACTIVE
+# fallback for apps nobody declared; `nixremote.forward.<peer>.apps` is the
+# mechanism for the apps that matter, generating real `<app>@<peer>` and
+# `<app>.<peer>` executables that work from any shell and exit with the app's
+# own status.
 #
 # ── GOTCHA: fish_command_not_found doesn't compose ────────────────────────
 # fish looks up a function LITERALLY named `fish_command_not_found` and
