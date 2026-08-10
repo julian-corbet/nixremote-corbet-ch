@@ -146,12 +146,40 @@ in
 
     memoryMax = lib.mkOption {
       type = lib.types.str;
-      default = "96m";
+      default = "96M";
+      example = "128M";
       description = ''
-        Hard cap passed to podman `--memory` (defense-in-depth under the
-        generated unit's own `MemoryMax`, set to the same value below).
-        hbbs + hbbr + s6 idle around 15-30 MB RSS on a real deployment; 96m
-        is generous headroom for a small host. Lower it if this server
+        Hard cap on the server's memory, handed to BOTH podman's `--memory`
+        and the generated unit's own `MemoryMax=` -- one string, two
+        parsers, so it has to be spelled in the INTERSECTION of the two
+        grammars: a number (a decimal fraction is allowed) with an
+        UPPERCASE `K`/`M`/`G`/`T`/`P` suffix, or no suffix at all for plain
+        bytes. Anything else fails the build; see the assertion in this
+        module's `config` for why that is worth a hard failure.
+
+        The uppercase is load-bearing. podman's parser (Docker's
+        `RAMInBytes`) is case-INsensitive and takes `96m` happily; systemd's
+        is not, and does not fail -- it drops the directive and keeps going:
+
+            systemd[1]: podman-rustdesk-server.service:16: Invalid memory
+                        limit '96m', ignoring: Invalid argument
+
+        A lowercase value therefore delivers exactly one of the two layers
+        this option promises, and it is the OUTER one that goes missing: the
+        unit runs at `MemoryMax=infinity` while `systemctl status` stays
+        green and `podman inspect` still reports the container's own cap, so
+        every place you would think to look agrees the limit is on.
+
+        Both parsers read `K`/`M`/`G` as base-1024, so `96M` is the same
+        100663296 bytes on either side of the pair -- the two layers cap at
+        the identical number, not merely at similar ones. Two forms systemd
+        documents are deliberately outside the accepted set because podman
+        has no equivalent for either: `E` (Docker's parser stops at `P`) and
+        the percentage-of-RAM form `MemoryMax=50%` (podman: `invalid value
+        for memory: invalid suffix: '%'`).
+
+        hbbs + hbbr + s6 idle around 15-30 MB RSS on a real deployment, so
+        96M is generous headroom for a small host. Lower it if this server
         shares a memory-constrained box with something more important (see
         `oomScoreAdjust` below for the other half of "never lets this be the
         thing that takes the box down").
@@ -188,6 +216,30 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # `memoryMax` is the only value in this module that crosses two parsers (podman's
+    # `--memory` and systemd's `MemoryMax=`), and the two disagree about case, so it is
+    # the only one that can be accepted by one half and dropped by the other. Everything
+    # else the module hands to systemd is either an int (`oomScoreAdjust`) or a path.
+    # Fail the build rather than warn: the failure mode this guards is a limit that LOOKS
+    # applied from every angle (see the option's own description), so a warning scrolling
+    # past a rebuild is not proportionate to a cap that silently is not there.
+    assertions = [
+      {
+        assertion = builtins.match "[0-9]+(\\.[0-9]+)?[KMGTP]?" cfg.memoryMax != null;
+        message = ''
+          nixremote.rustdesk.memoryMax = "${cfg.memoryMax}" is not spelled in the
+          intersection of the two parsers it is fed to -- podman's `--memory` and the
+          generated unit's `MemoryMax=`. Use a number with an UPPERCASE K/M/G/T/P suffix,
+          or no suffix for plain bytes: "96M", "1.5G", "100663296".
+
+          A lowercase suffix is the trap this assertion exists for: podman accepts "96m"
+          and caps the container, systemd rejects it and DISCARDS the whole directive
+          ("Invalid memory limit '96m', ignoring: Invalid argument"), leaving the unit at
+          MemoryMax=infinity behind a green `systemctl status`.
+        '';
+      }
+    ];
+
     virtualisation.podman = {
       enable = true;
       dockerCompat = false;
@@ -232,9 +284,15 @@ in
       wants = [ "network-online.target" ];
       unitConfig.RequiresMountsFor = cfg.stateDir;
       serviceConfig = {
-        # Same value as the podman `--memory` cap above -- systemd's own MemoryMax as the
-        # outer belt to that inner suspender (systemd byte-unit suffixes are case-insensitive,
-        # so the same string podman takes is valid here unchanged).
+        # The same string podman got as `--memory` above, now as systemd's own MemoryMax:
+        # the outer belt to that inner suspender, enforced by the cgroup this unit owns
+        # rather than by the container runtime that could be bypassed or restarted around
+        # it. systemd's byte-unit suffixes are CASE-SENSITIVE (K/M/G/T/P/E) where podman's
+        # are not, so a shared string is only actually shared if it is uppercase -- a
+        # lowercase one is taken by podman and dropped by systemd, which is precisely the
+        # half-applied cap the `memoryMax` assertion above refuses to build. The tests
+        # assert this on the RENDERED unit text and the RENDERED podman argv, not on the
+        # option value: an option-level test passes just as happily either way.
         MemoryMax = cfg.memoryMax;
       } // lib.optionalAttrs (cfg.oomScoreAdjust != null) {
         OOMScoreAdjust = cfg.oomScoreAdjust;

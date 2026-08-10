@@ -34,6 +34,32 @@ let
   sorted = lib.sort (a: b: a < b);
   serviceNames = cfg: sorted (lib.attrNames cfg.systemd.services);
 
+  # ── the two RENDERED artifacts, not the option values ──────────────────────────────────────
+  #
+  # `unitText` is the literal unit file systemd will parse; `podmanArgv` the literal argv podman
+  # will parse. rustdesk.nix hands ONE string (`memoryMax`) to both, and the memory checks below
+  # deliberately read it back out of these two rendered artifacts rather than out of
+  # `cfg.nixremote.rustdesk.memoryMax`. An option-level test cannot see this module's real defect
+  # class at all: the "96m" default that shipped here read back as "96m" from the option, was
+  # accepted by podman, and was thrown away by systemd with `Invalid memory limit '96m',
+  # ignoring: Invalid argument` -- so the option, the container and `systemctl status` all agreed
+  # the cap was on while the unit ran at MemoryMax=infinity. Only the unit file shows that.
+  unitText = cfg: cfg.systemd.units."podman-rustdesk-server.service".text;
+  podmanArgv = cfg: cfg.systemd.services."podman-rustdesk-server".script;
+
+  # Byte-valued systemd directives in a rendered unit, and the subset of them carrying a
+  # LOWERCASE size suffix -- i.e. the ones systemd will silently discard. Scoped to the
+  # Memory*/Limit* families on purpose: those are the byte-valued settings, whereas a blanket
+  # scan of every directive would flag perfectly legal lowercase TIME units (`TimeoutStopSec=5m`
+  # is five minutes, and this unit really does render a TimeoutStopSec).
+  byteLimitLines = text:
+    builtins.filter (l: builtins.match "(Memory|Limit)[A-Za-z]*=.*" l != null) (lib.splitString "\n" text);
+  lowercaseByteLimits = text:
+    builtins.filter (l: builtins.match "(Memory|Limit)[A-Za-z]*=[0-9]+(\\.[0-9]+)?[kmgtpe]" l != null)
+      (byteLimitLines text);
+
+  failedAssertions = cfg: map (a: a.message) (builtins.filter (a: !a.assertion) cfg.assertions);
+
   # ── system-manager plane: modules/tools.nix (openssh/waypipe), via toolsModule ──────────────
   #
   # Stub of the two options system-manager.nix's `install.*` branches reach for
@@ -91,6 +117,23 @@ let
         encryptedOnly = true;
         oomScoreAdjust = 500;
         openFirewall = false;
+        memoryMax = "48M";
+      };
+    }
+  ];
+
+  # A lowercase suffix: what shipped as this module's own default, and what a consumer copying
+  # any podman/docker example will reach for. Evaluated (not built) so the checks can read the
+  # assertion back off `config.assertions`; `nixosBuildFails` below proves the same value is
+  # genuinely fatal and not merely listed.
+  cfg-lowercase-memory = evalNixosModules [
+    bareStubs
+    rustdeskModule
+    {
+      nixremote.rustdesk = {
+        enable = true;
+        relayHost = "rustdesk.example.com";
+        memoryMax = "96m";
       };
     }
   ];
@@ -124,6 +167,34 @@ let
     (check "rustdesk/oomScoreAdjust-reaches-the-unit"
       (cfg-tuned.systemd.services."podman-rustdesk-server".serviceConfig.OOMScoreAdjust == 500)
       "oomScoreAdjust did not reach systemd.services.'podman-rustdesk-server'.serviceConfig.OOMScoreAdjust")
+
+    (check "rustdesk/default-memoryMax-renders-a-cap-systemd-will-actually-apply"
+      (builtins.elem "MemoryMax=96M" (lib.splitString "\n" (unitText cfg-enabled)))
+      "the default memoryMax must land in the RENDERED unit as MemoryMax=96M -- uppercase, because systemd's size parser is case-sensitive and answers a lowercase suffix with `Invalid memory limit '96m', ignoring: Invalid argument`, running the unit at MemoryMax=infinity while podman still caps the container -- got the byte-limit lines: ${builtins.toJSON (byteLimitLines (unitText cfg-enabled))}")
+
+    (check "rustdesk/memoryMax-reaches-podman-argv-and-the-unit-as-the-same-string"
+      (lib.hasInfix "'--memory=48M'" (podmanArgv cfg-tuned)
+        && builtins.elem "MemoryMax=48M" (lib.splitString "\n" (unitText cfg-tuned)))
+      "a non-default memoryMax must appear VERBATIM in both rendered halves of the pair the option promises -- podman's argv (the container's own cap) and the unit's MemoryMax= (the cgroup cap that outlives the runtime) -- got argv memory arg: ${builtins.toJSON (builtins.filter (l: lib.hasInfix "--memory" l) (lib.splitString "\n" (podmanArgv cfg-tuned)))}, unit byte limits: ${builtins.toJSON (byteLimitLines (unitText cfg-tuned))}")
+
+    (check "rustdesk/no-rendered-byte-limit-carries-a-lowercase-suffix"
+      (lowercaseByteLimits (unitText cfg-enabled) == [ ] && lowercaseByteLimits (unitText cfg-tuned) == [ ])
+      "no Memory*/Limit* directive in a rendered unit may carry a lowercase size suffix -- systemd discards those individually and keeps running, so a single one silently uncaps whatever it was supposed to bound; this check is deliberately generic rather than pinned to MemoryMax, so adding a MemoryHigh/MemorySwapMax/LimitAS with a podman-shaped lowercase value cannot reintroduce the class -- got: ${builtins.toJSON (lowercaseByteLimits (unitText cfg-enabled) ++ lowercaseByteLimits (unitText cfg-tuned))}")
+
+    (check "rustdesk/lowercase-memoryMax-fails-the-build"
+      (nixosBuildFails [
+        bareStubs
+        rustdeskModule
+        { nixremote.rustdesk = { enable = true; relayHost = "rustdesk.example.com"; memoryMax = "96m"; }; }
+      ])
+      "memoryMax = \"96m\" must fail the build, not warn: podman takes it and systemd drops it, so the half that vanishes is the outer one and nothing in `systemctl status`, `podman inspect` or the option value reveals it -- but the build succeeded")
+
+    (check "rustdesk/the-memoryMax-assertion-is-the-one-that-fires-and-only-on-a-bad-value"
+      (builtins.length (failedAssertions cfg-lowercase-memory) == 1
+        && lib.hasInfix "memoryMax" (builtins.head (failedAssertions cfg-lowercase-memory))
+        && failedAssertions cfg-enabled == [ ]
+        && failedAssertions cfg-tuned == [ ])
+      "exactly one assertion -- this module's memoryMax one -- must fail on \"96m\", and none may fail on the default or on a valid uppercase value; a guard that also fires on \"96M\"/\"48M\" would be worse than the bug it replaces -- got for 96m: ${builtins.toJSON (failedAssertions cfg-lowercase-memory)}, for the default: ${builtins.toJSON (failedAssertions cfg-enabled)}, for 48M: ${builtins.toJSON (failedAssertions cfg-tuned)}")
 
     (check "rustdesk/missing-relayHost-fails-the-build"
       (nixosBuildFails [ bareStubs rustdeskModule { nixremote.rustdesk.enable = true; } ])
