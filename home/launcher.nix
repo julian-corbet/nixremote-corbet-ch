@@ -344,7 +344,21 @@ let
                     or e.get("NoDisplay", "").lower() == "true"
                     or e.get("Hidden", "").lower() == "true"):
                 continue
-            out.append({"name": e.get("Name", base), "exec": e["Exec"],
+            out.append({"name": e.get("Name", base),
+                        # The desktop-entry FILENAME, which is the only stable identity an
+                        # application has here. `Name` is a display string: it is translated, it is
+                        # chosen by upstream rather than by the packager, and nothing stops two
+                        # entries from sharing one -- `org.kde.foo.desktop` and `foo.desktop` both
+                        # calling themselves "Foo" is ordinary. A consumer that keys state on the
+                        # display name therefore collapses them into one row, and whichever loses
+                        # becomes unreachable.
+                        #
+                        # It costs nothing to emit: `base` is already computed above, and is
+                        # already what the dedupe here keys on -- so this is publishing the
+                        # identity this function ALREADY treats as authoritative, rather than
+                        # inventing one.
+                        "id": base,
+                        "exec": e["Exec"],
                         "terminal": e.get("Terminal", "").lower() == "true",
                         # `Icon` was already in WANT and already fetched over the wire; it was
                         # simply dropped here, because rofi's script mode was the only consumer and
@@ -531,7 +545,8 @@ let
                 "error": err,
                 "folders": [
                     {"label": k, "apps": [
-                        {"name": a["name"], "icon": a.get("icon", ""),
+                        {"id": a.get("id", a["name"]), "name": a["name"],
+                         "icon": a.get("icon", ""),
                          "exec": a["exec"], "terminal": a["terminal"]}
                         for a in grouped[k]]}
                     for k in order
