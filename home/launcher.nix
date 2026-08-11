@@ -69,7 +69,31 @@ let
     in
     h // {
       ssh = if h.ssh != null then h.ssh else (if peer != null then peer.sshAlias else null);
-      launch = if h.launch != null then h.launch else (if peer != null then peer.scriptName else null);
+      # ⚠ ABSOLUTE, NOT `peer.scriptName` ON ITS OWN. The peer script is a real executable in the
+      # user's profile, and a BARE name here resolves only for a process whose PATH contains that
+      # profile. rofi's does not: it is started from the compositor/systemd user session, whose
+      # PATH is systemd's own default, and `~/.nix-profile/bin` is not on it. An interactive shell
+      # PATH does contain it -- which is exactly why this bug survives every test run from a
+      # terminal and fails only for the person actually using the launcher.
+      #
+      # The symptom is total silence. rlaunch's `launch()` hands argv straight to `Popen`, so the
+      # missing name raises out of the whole script and the mode dies mid-launch:
+      #
+      #   FileNotFoundError: [Errno 2] No such file or directory: 'waypipe@devhome'
+      #
+      # rofi swallows a script mode's stderr, so the window simply closes with nothing started,
+      # nothing logged where anyone would look, and no error on screen. Caught only by watching a
+      # real user do it with this file's own `log()` output open.
+      #
+      # `home.profileDirectory` rather than a hardcoded `~/.nix-profile`: home-manager answers this
+      # correctly on both planes, and the NixOS-module plane (`useUserPackages`) puts packages in
+      # /etc/profiles/per-user/<name> instead -- a host where the hardcoded path is simply wrong.
+      # forward.nix's own `mkAppWrapper` already reaches the peer script by absolute path for the
+      # identical reason; this was the one consumer still passing a bare name.
+      launch =
+        if h.launch != null then h.launch
+        else if peer != null then "${config.home.profileDirectory}/bin/${peer.scriptName}"
+        else null;
     };
 
   resolvedHosts = map resolveHost cfg.hosts;
