@@ -346,6 +346,12 @@ let
                 continue
             out.append({"name": e.get("Name", base), "exec": e["Exec"],
                         "terminal": e.get("Terminal", "").lower() == "true",
+                        # `Icon` was already in WANT and already fetched over the wire; it was
+                        # simply dropped here, because rofi's script mode was the only consumer and
+                        # this mode never rendered icons. A front-end that DOES render them needs
+                        # the name, and `rlaunch-icons` has always synced the matching remote icon
+                        # FILES into the local hicolor theme, so a name is all it needs.
+                        "icon": e.get("Icon", ""),
                         "cats": [c for c in e.get("Categories", "").split(";") if c]})
         return sorted(out, key=lambda a: a["name"].lower())
 
@@ -476,9 +482,13 @@ let
         # in front of the host name, where rofi will never touch it.
         args = sys.argv[1:]
         flat = False
+        as_json = False
         while args and args[0].startswith("--"):
-            if args.pop(0) == "--flat":
+            f = args.pop(0)
+            if f == "--flat":
                 flat = True
+            elif f == "--json":
+                as_json = True
 
         hosts = {h["name"]: h for h in c["hosts"]}
         fallback = next(h for h in c["hosts"] if h.get("local"))
@@ -502,6 +512,33 @@ let
         for a in apps:
             grouped.setdefault(bucket(a, cats), []).append(a)
         order = [k for k in [c["label"] for c in cats] + ["Other"] if k in grouped]
+
+        # ── THE SEAM: the same inventory, without rofi's protocol wrapped around it ───────────
+        # A front-end that is not rofi needs exactly what the code above just computed -- this
+        # host's real applications, already deduplicated, already bucketed into the operator's own
+        # folder table, already in the operator's own folder ORDER -- and needs it without
+        # re-implementing the SSH round trip, the cache, or the grouping. Emitting it here rather
+        # than from a second entry point is what keeps the two front-ends honest: there is one
+        # inventory path, and a divergence between what rofi shows and what anything else shows is
+        # not expressible.
+        #
+        # `err` is carried rather than raised. An unreachable peer is a normal, frequent state on a
+        # roaming laptop, and a front-end wants to draw the tab greyed out with a reason on it, not
+        # to be handed an empty list it cannot distinguish from "this machine has no apps".
+        if as_json:
+            json.dump({
+                "host": host["name"],
+                "error": err,
+                "folders": [
+                    {"label": k, "apps": [
+                        {"name": a["name"], "icon": a.get("icon", ""),
+                         "exec": a["exec"], "terminal": a["terminal"]}
+                        for a in grouped[k]]}
+                    for k in order
+                ],
+            }, sys.stdout)
+            sys.stdout.write("\n")
+            return
 
         def show_categories(note=""):
             meta("prompt", host["name"])
