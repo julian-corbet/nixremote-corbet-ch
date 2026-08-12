@@ -113,6 +113,7 @@ let
       resolvedHosts;
     hide.desktop_files = cfg.hide;
     categories = map (c: { inherit (c) label tags; }) cfg.categories;
+    assign = map (a: { inherit (a) match label; }) cfg.assign;
   };
 
   configFile = tomlFormat.generate "rlaunch-config.toml" settings;
@@ -474,7 +475,18 @@ let
 
     # ── the mode ─────────────────────────────────────────────────────────────────
 
-    def bucket(app, cats):
+    def bucket(app, cats, assigns):
+        # THE OVERRIDES RUN FIRST, and they exist because `Categories=` is written by whoever
+        # packaged the application, not by whoever uses it. Two live examples: Moonlight declares
+        # `Qt;Game;` when what it does is drive another machine's desktop, and Zoom declares
+        # `Network;Application;` when it is a chat client. Both are defensible readings of the
+        # spec and both put the application somewhere nobody would look for it, and no reordering
+        # of the tag table fixes either -- the tag that would carry the right answer is simply
+        # not there.
+        for a in assigns:
+            m = a.get("match", "").lower()
+            if m and (m in app["id"].lower() or m in app["name"].lower()):
+                return a["label"]
         for c in cats:
             if any(t in app["cats"] for t in c["tags"]):
                 return c["label"]
@@ -509,6 +521,7 @@ let
         host = hosts.get(args[0] if args else "", fallback)
         sel = args[1] if len(args) > 1 else ""
         cats = c.get("categories", [])
+        assigns = c.get("assign", [])
         layout = c.get("layout", {})
 
         typed_error = ""
@@ -524,7 +537,7 @@ let
         apps, err = inventory(c, host)
         grouped = {}
         for a in apps:
-            grouped.setdefault(bucket(a, cats), []).append(a)
+            grouped.setdefault(bucket(a, cats, assigns), []).append(a)
         order = [k for k in [c["label"] for c in cats] + ["Other"] if k in grouped]
 
         # ── THE SEAM: the same inventory, without rofi's protocol wrapped around it ───────────
@@ -968,6 +981,27 @@ let
     };
   };
 
+  assignModule = {
+    options = {
+      match = lib.mkOption {
+        type = lib.types.str;
+        description = ''
+          Case-insensitive SUBSTRING of the `.desktop` basename or the display name. The shortest
+          unambiguous word wins, so `moonlight` catches `com.moonlight_stream.Moonlight.desktop`
+          without anyone needing to know the reverse-DNS spelling a packager chose.
+        '';
+      };
+      label = lib.mkOption {
+        type = lib.types.str;
+        description = ''
+          The group it goes in. Nothing checks this against `categories`: a label with no matching
+          category is a group of its own, which is occasionally what you want and always visible
+          on screen if it is not.
+        '';
+      };
+    };
+  };
+
   categoryModule = {
     options = {
       label = lib.mkOption {
@@ -1105,6 +1139,29 @@ in
         Anything unmatched lands in a group called `Other`, which is always last and needs no
         entry. An empty list therefore puts everything in `Other` — usable, but the categories are
         where a several-hundred-application list becomes navigable.
+      '';
+    };
+
+    assign = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule assignModule);
+      default = [ ];
+      example = lib.literalExpression ''
+        [ { match = "moonlight"; label = "Remote"; }
+          { match = "zoom";      label = "Chat"; }
+        ]
+      '';
+      description = ''
+        Applications whose `Categories=` is wrong, and where they actually go. Checked BEFORE
+        `categories`, so an entry here beats every tag the application declares.
+
+        This is an escape hatch and it earns its place: `Categories=` is written by whoever built
+        the package, and no amount of reordering the tag table can fix an entry whose tags simply
+        do not include the fact you care about. Moonlight declares `Qt;Game;` — true, and useless
+        to someone looking for the thing that drives another machine's desktop. Zoom declares
+        `Network;Application;` — also true, and it is a chat client.
+
+        Keep it short. A long list here means the `categories` table is fighting the data rather
+        than reading it, and the tag table is the thing that scales.
       '';
     };
 
