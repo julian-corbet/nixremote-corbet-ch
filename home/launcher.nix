@@ -276,6 +276,7 @@ let
     import os
     import re
     import shlex
+    import shutil
     import subprocess
     import sys
     import time
@@ -291,7 +292,12 @@ let
                    # home-manager-as-NixOS-module puts a user's apps here, and it is
                    # NOT on the PATH of an ssh command run as anyone else
                    "/etc/profiles/per-user/*/share/applications"]
-    WANT = "^(Name|Exec|Categories|Icon|Terminal|NoDisplay|Hidden|Type)="
+    WANT = "^(Name|Exec|Categories|Icon|Terminal|NoDisplay|Hidden|Type|TryExec)="
+
+    # Marker for the second half of a remote read: which `TryExec` values actually resolve on THAT
+    # machine. It has to be computed there and not here -- the whole point of TryExec is "does this
+    # host have the program", and this program answers for three hosts at once.
+    TRYEXEC_OK = "__TRYEXEC_OK__"
     FIELD_CODES = re.compile(r"%[fFuUickvmdDnN]")
     BACK = "‹ back"
 
@@ -333,7 +339,7 @@ let
         return files
 
 
-    def to_apps(files, hidden):
+    def to_apps(files, hidden, resolves=None):
         out = []
         seen = set()
         for path, e in files.items():
@@ -344,6 +350,20 @@ let
             if (e.get("Type") != "Application" or not e.get("Exec")
                     or e.get("NoDisplay", "").lower() == "true"
                     or e.get("Hidden", "").lower() == "true"):
+                continue
+            # `TryExec` IS THE SPEC'S OWN "is this actually installed" FIELD, and honouring it is
+            # what makes a corrected entry safe to declare fleet-wide. A `.desktop` written by us
+            # to fix a packager's wrong Categories has to be deployed to every host that might have
+            # the program; without this check it would also conjure the program on the hosts that
+            # do NOT, and a launcher whose axis is machines would confidently show Moonlight on a
+            # machine that has never had it.
+            #
+            # FAILS OPEN. `resolves` is None when nothing could work out what this host has -- an
+            # old cache, a peer whose shell produced no marker section -- and in that case an entry
+            # is kept. Showing something that will not start is a bad row; hiding everything
+            # because one probe misfired is a broken launcher.
+            te = e.get("TryExec", "").strip()
+            if te and resolves is not None and not resolves(te):
                 continue
             out.append({"name": e.get("Name", base),
                         # The desktop-entry FILENAME, which is the only stable identity an
@@ -379,7 +399,11 @@ let
             return []
         p = subprocess.run(["grep", "-H", "-E", WANT] + args,
                            capture_output=True, text=True)
-        return to_apps(entries_from_grep(p.stdout), hidden)
+        # Local is the easy half: this IS the host, so shutil.which is the answer. It handles both
+        # spellings the spec allows -- a bare name resolved against PATH, and an absolute path
+        # checked for executability.
+        return to_apps(entries_from_grep(p.stdout), hidden,
+                       lambda b: shutil.which(b) is not None)
 
 
     def fetch_remote(host, ttl, hidden):
@@ -395,8 +419,19 @@ let
         # Wrapped in `sh -c` and using find, NOT shell globs: the remote login shell
         # may be fish, which aborts the whole command on a wildcard that matches
         # nothing — and /run/current-system only exists on the NixOS hosts.
-        inner = (f"find {' '.join(REMOTE_DIRS)} -name '*.desktop' "
-                 f"-exec grep -H -E '{WANT}' {{}} + 2>/dev/null")
+        dirs = ' '.join(REMOTE_DIRS)
+        # TWO PASSES IN ONE ROUND TRIP. The second resolves every distinct `TryExec` value ON THAT
+        # HOST, because that is the only place the question means anything -- this program reads
+        # three machines' entries and would otherwise test the peer's programs against its own
+        # PATH. `command -v` is a shell builtin, so ~90 of them cost nothing next to the ssh
+        # handshake already being paid, and a second ssh would cost another round trip.
+        inner = (f"find {dirs} -name '*.desktop' "
+                 f"-exec grep -H -E '{WANT}' {{}} + 2>/dev/null; "
+                 f"find {dirs} -name '*.desktop' "
+                 f"-exec grep -h '^TryExec=' {{}} + 2>/dev/null "
+                 f"| sed 's/^TryExec=//' | sort -u "
+                 f"| while read -r b; do command -v \"$b\" >/dev/null 2>&1 "
+                 f"&& echo '{TRYEXEC_OK}'\"$b\"; done")
         p = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", host["ssh"],
              "sh -c " + shlex.quote(inner)],
@@ -404,7 +439,22 @@ let
         if not p.stdout.strip():
             err = (p.stderr.strip().splitlines() or ["no applications found"])[-1]
             return [], err
-        apps = to_apps(entries_from_grep(p.stdout), hidden)
+        # Split the marker lines back out before parsing: entries_from_grep expects every line to
+        # be `path:KEY=value`, and these are neither.
+        ok = set()
+        body = []
+        saw_marker = False
+        for line in p.stdout.splitlines():
+            if line.startswith(TRYEXEC_OK):
+                ok.add(line[len(TRYEXEC_OK):])
+                saw_marker = True
+            else:
+                body.append(line)
+        # `saw_marker` false means the peer produced no second section at all -- an older remote,
+        # a shell that choked on the loop. Pass None so to_apps keeps everything, rather than
+        # concluding that nothing on that machine is installed.
+        apps = to_apps(entries_from_grep("\n".join(body)), hidden,
+                       (lambda b: b in ok) if saw_marker else None)
         try:
             with open(cache, "w") as f:
                 json.dump(apps, f)
