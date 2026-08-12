@@ -287,11 +287,21 @@ let
     RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "rlaunch")
     LOCAL_DIRS = ["~/.local/share/applications", "/usr/local/share/applications",
                   "/usr/share/applications"]
-    REMOTE_DIRS = ["/usr/share/applications", "$HOME/.local/share/applications",
-                   "/run/current-system/sw/share/applications",
+    # XDG PRECEDENCE, AND THE ORDER IS THE WHOLE POINT. Dedupe below is first-wins, so this list
+    # decides which copy of a twice-defined entry a peer reports. The spec is unambiguous:
+    # XDG_DATA_HOME beats every XDG_DATA_DIRS entry, which is exactly what makes a corrected
+    # `.desktop` in a user's own directory able to override a packager's.
+    #
+    # This list used to lead with /usr/share/applications, and that inverted the rule for REMOTE
+    # hosts only -- LOCAL_DIRS above has always been right. The symptom was a user override that
+    # worked on the machine you were sitting at and was silently ignored on every other column,
+    # which reads as "the fix did not deploy" rather than "the fix is being outranked".
+    REMOTE_DIRS = ["$HOME/.local/share/applications",
                    # home-manager-as-NixOS-module puts a user's apps here, and it is
                    # NOT on the PATH of an ssh command run as anyone else
-                   "/etc/profiles/per-user/*/share/applications"]
+                   "/etc/profiles/per-user/*/share/applications",
+                   "/run/current-system/sw/share/applications",
+                   "/usr/share/applications"]
     WANT = "^(Name|Exec|Categories|Icon|Terminal|NoDisplay|Hidden|Type|TryExec)="
 
     # Marker for the second half of a remote read: which `TryExec` values actually resolve on THAT
