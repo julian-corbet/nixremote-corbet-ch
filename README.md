@@ -442,11 +442,13 @@ the same key — one launcher, one theme, one set of hidden-application rules. I
 typing `firefox.archlxc` there still launches on that machine, so the SSH cost is paid only by
 someone who actually asked for another machine, at the moment they ask.
 
-**Both lists are ordered, and both orders are load-bearing.** `hosts` is the tab bar, left to right,
-and its first entry is the tab the launcher opens on. `categories` is a priority list — the *first*
-group whose tags match wins, so `TerminalEmulator` must come before `System` or every terminal
-emulator lands under System. That is why neither is an attrset: an attrset would alphabetise them
-and quietly change the result.
+**Both lists are ordered, and both orders are visible.** `hosts` is the tab bar, left to right, and
+its first entry is the tab the launcher opens on. `categories` is the category display order.
+Matching is stable in that same order by default, so `TerminalEmulator` must ordinarily come before
+`System` or every terminal emulator lands under System. A category may set `matchPriority` when the
+two needs genuinely differ: higher values classify first without moving the row on screen. This is
+how Games can remain visually last while still beating the broader `Network` tag Steam also
+declares. Neither list is an attrset because alphabetising either would still change the UI.
 
 **It launches through `forward`, it does not reimplement it.** A tab named `archlxc` refers to
 `nixremote.forward.archlxc`, and a pick execs that peer's own generated wrapper. So the launcher

@@ -112,7 +112,10 @@ let
       })
       resolvedHosts;
     hide.desktop_files = cfg.hide;
-    categories = map (c: { inherit (c) label tags; }) cfg.categories;
+    categories = map (c: {
+      inherit (c) label tags;
+      match_priority = c.matchPriority;
+    }) cfg.categories;
     assign = map (a: { inherit (a) match label; }) cfg.assign;
   };
 
@@ -547,7 +550,11 @@ let
             m = a.get("match", "").lower()
             if m and (m in app["id"].lower() or m in app["name"].lower()):
                 return a["label"]
-        for c in cats:
+        # DISPLAY ORDER AND MATCH ORDER ARE DIFFERENT NEEDS. `cats` stays in declaration order
+        # everywhere it is drawn. Matching uses the explicit priority, stably, so a broad group
+        # can appear early on screen without stealing an application from a more specific group
+        # that the operator deliberately placed later. Equal priorities retain declaration order.
+        for c in sorted(cats, key=lambda c: c.get("match_priority", 0), reverse=True):
             if any(t in app["cats"] for t in c["tags"]):
                 return c["label"]
         return "Other"
@@ -1076,6 +1083,20 @@ let
           declare is the point.
         '';
       };
+      matchPriority = lib.mkOption {
+        type = lib.types.int;
+        default = 0;
+        description = ''
+          Classification priority, highest first. This affects only which category wins when an
+          application declares tags from more than one category; it never changes the visible
+          order of category rows. Equal priorities retain declaration order.
+
+          Leave it at zero when visible order is also a valid first-match order. Set it only for
+          specific groups that must classify before a broader group while appearing later on
+          screen -- for example Games after Net visually, even though Steam declares both Game
+          and Network.
+        '';
+      };
     };
   };
 in
@@ -1317,6 +1338,16 @@ in
           The tabs with `ssh` and `launch` filled in from each one's `nixremote.forward` peer. This
           is what the generated config is built from, so it is where to look when a tab lists
           nothing (wrong `ssh`) or launches nothing (wrong `launch`).
+        '';
+      };
+
+      categories = lib.mkOption {
+        type = lib.types.listOf lib.types.attrs;
+        readOnly = true;
+        default = settings.categories;
+        description = ''
+          The category table exactly as rendered, in visible order and including each row's
+          independent match priority.
         '';
       };
 

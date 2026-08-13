@@ -219,6 +219,11 @@ let
       xdg.configHome = lib.mkOption { type = lib.types.str; default = "/home/u/.config"; };
       # home-manager declares this for real; forward.nix builds the known_hosts path from it.
       home.homeDirectory = lib.mkOption { type = lib.types.str; default = "/home/u"; };
+      # launcher.nix resolves generated peer wrappers through the real profile, never PATH.
+      home.profileDirectory = lib.mkOption {
+        type = lib.types.str;
+        default = "/home/u/.nix-profile";
+      };
       xdg.configFile = lib.mkOption { type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything); default = { }; };
       systemd.user.services = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
       systemd.user.targets = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
@@ -706,6 +711,12 @@ let
   launcher-basic = evalLauncher { };
   launcher-vertical = evalLauncher { tabs = "vertical"; };
   launcher-icons = evalLauncher { iconSync.enable = true; };
+  launcher-independent-match-order = evalLauncher {
+    categories = [
+      { label = "Net"; tags = [ "Network" ]; }
+      { label = "Games"; tags = [ "Game" ]; matchPriority = 100; }
+    ];
+  };
   launcher-off = evalHm [ forwardModule launcherModule { nixremote.launcher.enable = false; } ];
 
   # Everything below reads `nixremote.launcher.rendered.*` rather than the FILES the module writes.
@@ -713,6 +724,7 @@ let
   # `nix flake check --no-build` cannot realise -- it fails with `path ... is not valid`, an error
   # about the evaluator rather than about the launcher.
   rHosts = cfg: cfg.nixremote.launcher.rendered.hosts;
+  rCategories = cfg: cfg.nixremote.launcher.rendered.categories;
   rHost = cfg: name: lib.findFirst (x: x.name == name) null (rHosts cfg);
   rTheme = cfg: cfg.nixremote.launcher.rendered.theme;
   rEntry = cfg: cfg.nixremote.launcher.rendered.entry;
@@ -726,12 +738,18 @@ let
       (map (c: c.label) launcher-basic.nixremote.launcher.categories == [ "Terminals" "System" ])
       "categories is a LIST because the FIRST matching group wins; alphabetised, System would precede Terminals and every terminal emulator would land under System -- got: ${builtins.toJSON (map (c: c.label) launcher-basic.nixremote.launcher.categories)}")
 
+    (check "launcher/match-priority-does-not-change-visible-category-order"
+      (map (c: c.label) (rCategories launcher-independent-match-order) == [ "Net" "Games" ]
+        && (builtins.elemAt (rCategories launcher-independent-match-order) 0).match_priority == 0
+        && (builtins.elemAt (rCategories launcher-independent-match-order) 1).match_priority == 100)
+      "Games must be drawable last while its Game tag still classifies before Net's broader Network tag -- got: ${builtins.toJSON (rCategories launcher-independent-match-order)}")
+
     (check "launcher/ssh-destination-derived-from-the-forward-peer"
       ((rHost launcher-basic "archlxc").ssh == "nixremote-archlxc")
       "a tab reads its peer's inventory over the SAME alias nixremote's generated SSH config resolves through the address cascade, so a machine that has moved onto the overlay does not become listable but unlaunchable -- got: ${builtins.toJSON (rHost launcher-basic "archlxc").ssh}")
 
     (check "launcher/launch-command-is-the-peer-forward-wrapper-not-a-waypipe-invocation"
-      ((rHost launcher-basic "devhome").launch == "waypipe@devhome")
+      ((rHost launcher-basic "devhome").launch == "/home/u/.nix-profile/bin/waypipe@devhome")
       "a remote launch must go through the peer's own forward wrapper -- that wrapper owns the address cascade, audio return, video codec, orphan reaping and the app_id origin tag, none of which this launcher reimplements -- got: ${builtins.toJSON (rHost launcher-basic "devhome").launch}")
 
     (check "launcher/the-local-tab-carries-no-ssh-and-no-launch-wrapper"
