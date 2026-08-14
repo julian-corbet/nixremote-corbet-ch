@@ -655,6 +655,20 @@ let
                 listen on.
               '';
             };
+
+            resolveTimeoutSec = lib.mkOption {
+              type = lib.types.ints.positive;
+              default = 2;
+              description = ''
+                Total wall-clock budget, in seconds, for one launch's
+                best-effort audio resolution. This single deadline covers
+                both local `pactl` queries and the peer-side SSH lookup;
+                expiry skips `PULSE_SINK` selection and starts waypipe
+                immediately. A one-second SIGKILL grace follows the deadline
+                so a helper that ignores SIGTERM cannot outlive the launch
+                path indefinitely.
+              '';
+            };
           };
         };
       };
@@ -743,12 +757,12 @@ in
             # can and cannot replace here.
             sshFabricLookup = ''
               pat="Tunnel to tcp:${peer.audio.localAddress}:${toString peer.audio.tunnelPort}/$local_sink"
-              fabric_sink="$(${pkgs.openssh}/bin/ssh ${lib.escapeShellArg peer.sshAlias} pactl list sinks 2>/dev/null | ${pkgs.gawk}/bin/awk -v pat="$pat" '
+              fabric_sink="$(${pkgs.openssh}/bin/ssh -o BatchMode=yes ${lib.escapeShellArg peer.sshAlias} pactl list sinks 2>/dev/null | ${pkgs.gawk}/bin/awk -v pat="$pat" '
                 /^[[:space:]]*Name:/ { name = $2 }
                 index($0, pat) { print name; exit }
               ')"
               if [ -n "$fabric_sink" ]; then
-                extra_env="$extra_env PULSE_SINK=$fabric_sink"
+                printf '%s\n' "$fabric_sink"
               fi
             '';
 
@@ -778,9 +792,23 @@ in
             '';
 
             audioResolve = lib.optionalString (peer.audio.enable && peer.audio.localAddress != null) ''
-              local_sink="$(${pkgs.pulseaudio}/bin/pactl get-default-sink 2>/dev/null)" || local_sink=""
-              if [ -n "$local_sink" ]; then
-              ${if nixaudioComposed then catalogueGate else sshFabricLookup}
+              # Audio discovery is best-effort and precedes waypipe, so the
+              # whole transaction gets one deadline rather than allowing any
+              # individual pactl/SSH child to serialize a wider host stall
+              # into window startup. Expiry preserves the documented fallback:
+              # launch without a PULSE_SINK override.
+              nixremote_resolve_audio() {
+                local local_sink
+                local_sink="$(${pkgs.pulseaudio}/bin/pactl get-default-sink 2>/dev/null)" || local_sink=""
+                if [ -n "$local_sink" ]; then
+                ${if nixaudioComposed then catalogueGate else sshFabricLookup}
+                fi
+              }
+              export -f nixremote_resolve_audio
+              resolved_audio_sink="$(${pkgs.coreutils}/bin/timeout --kill-after=1s ${toString peer.audio.resolveTimeoutSec}s ${pkgs.bash}/bin/bash -c nixremote_resolve_audio)" || resolved_audio_sink=""
+              unset -f nixremote_resolve_audio
+              if [ -n "$resolved_audio_sink" ]; then
+                extra_env="$extra_env PULSE_SINK=$resolved_audio_sink"
               fi
             '';
 

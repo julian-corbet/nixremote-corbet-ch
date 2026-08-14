@@ -566,9 +566,16 @@ let
       (let text = forwardWrapperText forward-audioFallback "waypipe@testpeer"; in
       lib.hasInfix "pactl get-default-sink" text
       && lib.hasInfix "Tunnel to tcp:192.168.1.14:4713/$local_sink" text
-      && lib.hasInfix "PULSE_SINK=$fabric_sink" text
+      && lib.hasInfix "PULSE_SINK=$resolved_audio_sink" text
       && !(lib.hasInfix "nixaudio_device" text))
       "with nixaudio never composed, the wrapper must render EXACTLY the original raw-name SSH+grep match (no 'nixaudio_device' catalogue machinery anywhere) -- got: ${forwardWrapperText forward-audioFallback "waypipe@testpeer"}")
+
+    (check "forward/audio-resolution-has-one-total-launch-deadline"
+      (let text = forwardWrapperText forward-audioFallback "waypipe@testpeer"; in
+      lib.hasInfix "timeout --kill-after=1s 2s" text
+      && lib.hasInfix "bash -c nixremote_resolve_audio" text
+      && lib.hasInfix ''resolved_audio_sink="$('' text)
+      "the rendered wrapper must bound the complete audio resolver with the default two-second deadline and a hard-kill grace -- got: ${forwardWrapperText forward-audioFallback "waypipe@testpeer"}")
 
     (check "forward/nixaudio-composed-gates-through-the-catalogue-before-the-fabric-lookup"
       (let text = forwardWrapperText forward-audioCatalogue "waypipe@testpeer"; in
@@ -584,7 +591,7 @@ let
     (check "forward/nixaudio-composed-still-reaches-PULSE_SINK-through-the-gate"
       (let text = forwardWrapperText forward-audioCatalogue "waypipe@testpeer"; in
       lib.hasInfix "Tunnel to tcp:192.168.1.14:4713/$local_sink" text
-      && lib.hasInfix "PULSE_SINK=$fabric_sink" text)
+      && lib.hasInfix "PULSE_SINK=$resolved_audio_sink" text)
       "the catalogue gate must still fall through to the SAME live SSH+grep fabric lookup and assign PULSE_SINK from its result (a live shell variable, never a value baked in at build time) -- got: ${forwardWrapperText forward-audioCatalogue "waypipe@testpeer"}")
 
     (check "forward/nixaudio-renamed-leaf-warns-exactly-once-naming-the-option"

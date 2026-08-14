@@ -54,9 +54,12 @@ describes.
 
 `forward` — extracted from and replacing a
 one-off manual setup (packages installed by hand, exactly one direction
-wired, a single hardcoded LAN IP with no fallback). Honest gaps:
+wired, a single hardcoded LAN IP with no fallback). Its eval suite reads the
+actual generated wrappers and covers address, audio, application identity,
+and package-boundary behavior. Honest gaps:
 
-- No test suite yet.
+- No live network-partition integration test yet; the address-cascade proof
+  below remains the real-host evidence for that boundary.
 - The address cascade's fallback behavior was proven live (forced
   unreachability on the real first address, confirmed it falls through to
   the next one) — not assumed correct because it typechecks.
@@ -218,8 +221,10 @@ each launch, which of the *peer's* sinks mirrors *your* current default
 output, and sets `PULSE_SINK` to it — so the forwarded app's audio follows
 wherever you actually are, the same way any other app's already does. Pure
 best-effort: no default sink, an unreachable peer, or no matching mirror
-just falls through to today's behavior (the peer's own default), never
-blocking the window forward itself.
+just falls through to today's behavior (the peer's own default). The entire
+lookup is bounded by `audio.resolveTimeoutSec` (two seconds by default, plus
+a one-second hard-kill grace), so a stuck audio service or SSH command cannot
+turn an application launch into an open-ended wait.
 
 ```nix
 nixremote.forward.some-peer.audio.localAddress = "192.168.1.14";
@@ -228,7 +233,8 @@ nixremote.forward.some-peer.audio.localAddress = "192.168.1.14";
 `audio.localAddress` — the address *this* machine is known by on the
 peer's mesh (there's no generic way to guess it, so it's opt-in and
 explicit) — is the only thing you need to set; `audio.tunnelPort` defaults
-to 4713 (the standard PulseAudio/PipeWire native-protocol port). See
+to 4713 (the standard PulseAudio/PipeWire native-protocol port), and
+`audio.resolveTimeoutSec` defaults to 2. See
 `home/forward.nix`'s `audio` option docs for the full reference.
 
 ### Origin marking
