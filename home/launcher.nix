@@ -288,17 +288,15 @@ let
     ESC, NUL = "\x1f", "\0"
     CONF = ${builtins.toJSON "${config.xdg.configHome}/rlaunch/config.toml"}
     RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "rlaunch")
-    LOCAL_DIRS = ["~/.local/share/applications", "/usr/local/share/applications",
-                  "/usr/share/applications"]
     # XDG PRECEDENCE, AND THE ORDER IS THE WHOLE POINT. Dedupe below is first-wins, so this list
     # decides which copy of a twice-defined entry a peer reports. The spec is unambiguous:
     # XDG_DATA_HOME beats every XDG_DATA_DIRS entry, which is exactly what makes a corrected
     # `.desktop` in a user's own directory able to override a packager's.
     #
-    # This list used to lead with /usr/share/applications, and that inverted the rule for REMOTE
-    # hosts only -- LOCAL_DIRS above has always been right. The symptom was a user override that
-    # worked on the machine you were sitting at and was silently ignored on every other column,
-    # which reads as "the fix did not deploy" rather than "the fix is being outranked".
+    # The remote shell cannot be trusted to carry a graphical session's XDG environment, so its
+    # well-known NixOS and FHS roots stay explicit. Local inventory can and must read the actual
+    # XDG_DATA_* values: NixOS publishes system applications through /run/current-system/sw/share,
+    # which is neither of the FHS defaults and was therefore invisible on a local devhome tab.
     REMOTE_DIRS = ["$HOME/.local/share/applications",
                    # home-manager-as-NixOS-module puts a user's apps here, and it is
                    # NOT on the PATH of an ssh command run as anyone else
@@ -405,9 +403,14 @@ let
 
 
     def fetch_local(hidden):
+        data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        data_dirs = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+        local_dirs = [os.path.join(data_home, "applications")]
+        local_dirs += [os.path.join(d, "applications")
+                       for d in data_dirs.split(os.pathsep) if d]
         args = []
-        for d in LOCAL_DIRS:
-            args += glob.glob(os.path.join(os.path.expanduser(d), "*.desktop"))
+        for d in local_dirs:
+            args += glob.glob(os.path.join(d, "*.desktop"))
         if not args:
             return []
         p = subprocess.run(["grep", "-H", "-E", WANT] + args,

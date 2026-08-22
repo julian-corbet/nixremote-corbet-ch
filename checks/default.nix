@@ -735,6 +735,8 @@ let
   rHost = cfg: name: lib.findFirst (x: x.name == name) null (rHosts cfg);
   rTheme = cfg: cfg.nixremote.launcher.rendered.theme;
   rEntry = cfg: cfg.nixremote.launcher.rendered.entry;
+  rlaunchPackage = builtins.elemAt launcher-basic.home.packages 0;
+  rlaunchConfig = launcher-basic.xdg.configFile."rlaunch/config.toml".source;
 
   launcherResults = [
     (check "launcher/tab-order-survives-into-the-generated-config"
@@ -857,6 +859,42 @@ let
   ];
 in
 {
+  launcher-local-xdg-inventory = pkgs.runCommand "nixremote-launcher-local-xdg-inventory"
+    { nativeBuildInputs = [ pkgs.python3 pkgs.jq ]; }
+    ''
+      mkdir -p "$TMPDIR/bin" "$TMPDIR/home" "$TMPDIR/runtime" \
+        "$TMPDIR/xdg-home/applications" "$TMPDIR/nixos-system/share/applications"
+      cp ${rlaunchPackage}/bin/rlaunch "$TMPDIR/rlaunch"
+      chmod +w "$TMPDIR/rlaunch"
+      substituteInPlace "$TMPDIR/rlaunch" \
+        --replace-fail '/home/u/.config/rlaunch/config.toml' "$TMPDIR/config.toml"
+      cp ${rlaunchConfig} "$TMPDIR/config.toml"
+
+      cat > "$TMPDIR/nixos-system/share/applications/nixos-only.desktop" <<'DESKTOP'
+      [Desktop Entry]
+      Type=Application
+      Name=NixOS-only application
+      Exec=nixos-only
+      TryExec=nixos-only
+      Categories=System;
+      DESKTOP
+      cat > "$TMPDIR/bin/nixos-only" <<'PROGRAM'
+      #!/bin/sh
+      exit 0
+      PROGRAM
+      chmod +x "$TMPDIR/bin/nixos-only"
+
+      HOME="$TMPDIR/home" \
+      PATH="$TMPDIR/bin:$PATH" \
+      XDG_DATA_HOME="$TMPDIR/xdg-home" \
+      XDG_DATA_DIRS="$TMPDIR/nixos-system/share" \
+      XDG_RUNTIME_DIR="$TMPDIR/runtime" \
+        ${pkgs.python3}/bin/python3 "$TMPDIR/rlaunch" --json local > "$TMPDIR/result.json"
+      jq -e '[.folders[].apps[] | select(.id == "nixos-only.desktop")] | length == 1' \
+        "$TMPDIR/result.json" >/dev/null
+      touch "$out"
+    '';
+
   eval-tests =
     let
       allResults = results ++ hmResults ++ forwardResults ++ toolsResults ++ installResults ++ launcherResults ++ [
