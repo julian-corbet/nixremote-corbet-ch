@@ -8,8 +8,8 @@
 # where none exists. `aur = true` (default false, same nixdev/nixfs convention) means the Arch
 # name lives in the AUR rather than an official repo.
 #
-# HARD INVARIANT FOR THIS CATALOGUE: on Arch, every entry below comes from pacman and NEVER from
-# nixpkgs, even though nixpkgs happens to carry an attribute for both. See
+# HARD INVARIANT FOR THIS CATALOGUE: on Arch, every entry below comes from the native package
+# channels (official repositories or AUR) and NEVER from nixpkgs. See
 # ../modules/system-manager.nix's own header for why a second, independently-versioned copy in a
 # Nix profile loses the $PATH race against the distro package and just sits unused — the same
 # shadowing class nixfs's own catalogue header documents at length.
@@ -37,5 +37,9 @@
     # Non-interactive SSH password helper. Official Arch/CachyOS repository
     # package and nixpkgs attribute; used on both Arch hosts and corbet-server.
     sshpass = { arch = "sshpass"; nixpkgs = "sshpass"; };
+
+    # Persistent remote shells without multiplexing the terminal UI. Arch carries shpool in the
+    # AUR (not an official repository); nixpkgs carries the matching `shpool` attribute.
+    shpool = { arch = "shpool"; aur = true; nixpkgs = "shpool"; };
   };
 }

@@ -16,12 +16,13 @@
 # passing both together (`"desktop and output are conflicting options"`), so the two are kept
 # mutually exclusive here too.
 #
-# WHY WLROOTS-ONLY, AND WHY THIS MODULE CANNOT RELAX THAT. wayvnc captures frames through
-# `zwlr_screencopy_manager_v1` — a wlr-* protocol extension, not core Wayland, and not something
-# every compositor implements. Every compositor this repo's family targets (niri, sway, scroll)
-# is wlroots or a wlroots fork and implements it; a non-wlroots session (GNOME/Mutter,
-# KDE/KWin) exposes no equivalent surface at all, and there is no portable substitute — this is a
-# hard capability boundary of wayvnc itself, not a config knob this module could route around.
+# WHY THIS IS A PROTOCOL CAPABILITY BOUNDARY, NOT A COMPOSITOR-IMPLEMENTATION BOUNDARY. wayvnc
+# captures frames through `zwlr_screencopy_manager_v1` — a wlr-* protocol extension, not core
+# Wayland, and not something every compositor implements. A compositor does NOT need to be built
+# on wlroots to expose it: Smithay-based compositors can implement the same wire protocol. The
+# concrete session must publish the capture and virtual-input globals wayvnc consumes; its choice
+# of Rust/Smithay, C/wlroots, or another implementation is irrelevant. GNOME/Mutter and KDE/KWin
+# do not expose this wayvnc-facing surface, so they remain outside the module's capability set.
 #
 # ATTACHES TO AN ALREADY-RUNNING SESSION, exactly like sunshine.nix. wayvnc needs WAYLAND_DISPLAY
 # and XDG_RUNTIME_DIR to find the compositor's socket, both exported into the systemd --user
@@ -50,21 +51,15 @@
 # boot/logout, and never a Nix store path. A rotated credential file therefore takes effect on
 # the unit's next restart, with nothing in this module to re-render.
 #
-# WLR_RENDERER=pixman IS A PRECONDITION THIS MODULE CANNOT SET FOR YOU. A session served ONLY
-# through this module (no physical seat — `delivery = "headless"` in nixdesktop's own
-# vocabulary) has no legitimate reason to touch a real DRM render node, but a wlroots compositor's
-# renderer auto-detection picks one anyway unless told otherwise — and on this estate the only
-# render node present belongs to the shared RX 6800, which a headless session is
-# expressly forbidden to touch (see the estate's own GPU-tenancy contract). The fix,
-# `WLR_RENDERER=pixman` (software rendering), belongs on the COMPOSITOR's OWN systemd unit —
-# `niri.service`, `sway.service`, whichever this instance's `graphical-session.target` actually
-# depends on — NOT on any unit this module renders: wayvnc is a Wayland *client* of the
-# compositor via `zwlr_screencopy_manager_v1`; it links no wlroots rendering code itself and does
-# not read `WLR_RENDERER` at all, so setting it on wayvnc's own unit would be a no-op that reads
-# as enforcement while providing none. This module has no handle on a sibling unit it did not
-# create, so this is a manual, one-time, documented-not-automated precondition — the same class
-# of gap as forward.nix's own `Include ~/.ssh/conf.d/nixremote.conf` line. Set it yourself, on
-# whichever unit launches the headless compositor this console instance is meant to serve.
+# SOFTWARE RENDERING IS A PRECONDITION THIS MODULE CANNOT SET FOR YOU. A session served ONLY
+# through this module (no physical seat — `delivery = "headless"` in nixdesktop's own vocabulary)
+# has no legitimate reason to touch a real DRM render node. For a wlroots compositor the explicit
+# switch is `WLR_RENDERER=pixman`; a Smithay compositor must select its own software renderer by
+# whatever mechanism it provides. Either belongs on the COMPOSITOR's OWN systemd unit, not on
+# anything this module renders: wayvnc is only a Wayland client of the compositor and does no
+# rendering itself. Setting `WLR_RENDERER` on wayvnc would therefore be a convincing-looking
+# no-op. This module has no handle on a sibling unit it did not create, so the renderer choice is
+# a documented precondition on whichever unit launches the headless compositor.
 #
 # THE NOVNC/WEBSOCKIFY WEB FRONT (`web.*`) IS A SEPARATE PROCESS, NOT WAYVNC ITSELF. wayvnc 0.10.1
 # (the version packaged in nixpkgs here) DOES have its own native `-w`/`--websocket` flag, but
@@ -499,9 +494,10 @@ in
     description = ''
       Declare a wayvnc + noVNC "console" instance: a Wayland session (or one output of it)
       reachable over plain VNC (wayvnc's own RFB server) and, optionally, a browser (noVNC's web
-      UI fronting a websockify proxy). See this file's header for the wlroots-only capability
-      boundary, the secrets-as-files handling, and the WLR_RENDERER=pixman precondition this
-      module cannot enforce for you. An empty attrset is a complete no-op.
+      UI fronting a websockify proxy). See this file's header for the screencopy/input protocol
+      capability boundary, the secrets-as-files handling, and the compositor-side software
+      renderer precondition this module cannot enforce for you. An empty attrset is a complete
+      no-op.
     '';
   };
 

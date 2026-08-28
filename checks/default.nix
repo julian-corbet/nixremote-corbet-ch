@@ -1,9 +1,9 @@
 # checks/default.nix — eval-time tests for nixosModules.rustdesk AND the home-manager modules
-# (sunshine, console, forward). No VM, no container actually started: nothing here pulls an
+# (sunshine, console, shpool, forward). No VM, no container actually started: nothing here pulls an
 # image or runs podman/wayvnc/sunshine, it only forces module evaluation (assertions + the
 # config values the modules render) -- NixOS's own `eval-config.nix` for rustdesk, and a minimal
 # `lib.evalModules` home-manager STUB (mirroring nixscroll's own `checks/startup-contract.nix`)
-# for sunshine/console/forward, since `nix flake check` does not evaluate `homeManagerModules`
+# for sunshine/console/shpool/forward, since `nix flake check` does not evaluate `homeManagerModules`
 # at all -- it lists them as unchecked and moves on, so without this, sunshine's/console's/
 # forward's own option wiring (the fail-closed output gate, the auth/tls coupling assertions,
 # the nixaudio catalogue gate, ...) would be entirely untested by CI. Same reasoning for
@@ -11,7 +11,7 @@
 # modules/tools.nix) is evaluated with the same bare `lib.evalModules` technique. The matching
 # NixOS backend is evaluated through eval-config, proving the catalogue resolves to real packages
 # on both supported platforms.
-{ pkgs, lib, system, rustdeskModule, sunshineModule, consoleModule, forwardModule, launcherModule, rustdeskClientModule, probeFact, toolsModule, toolsNixosModule }:
+{ pkgs, lib, system, rustdeskModule, sunshineModule, consoleModule, shpoolModule, forwardModule, launcherModule, rustdeskClientModule, probeFact, toolsModule, toolsNixosModule }:
 
 let
   check = name: ok: detail: { inherit name ok detail; };
@@ -82,7 +82,9 @@ let
   tools-empty = evalTools { };
   tools-both = evalTools { nixremote.transport = [ "openssh" "waypipe" ]; };
   tools-all = evalTools { nixremote.transport = [ "openssh" "waypipe" "freerdp" "sshpass" ]; };
+  tools-shpool = evalTools { nixremote.transport = [ "shpool" ]; };
   tools-nixos = evalNixosModules [ bareStubs toolsNixosModule { nixremote.transport = [ "sshpass" ]; } ];
+  tools-nixos-shpool = evalNixosModules [ bareStubs toolsNixosModule { nixremote.transport = [ "shpool" ]; } ];
 
   # ── install.*: moonlight/rustdesk, sharing toolsModule's own eval harness (`evalTools`) since
   # both live in the same file (modules/system-manager.nix) that imports ./tools.nix. Exercises the
@@ -226,6 +228,7 @@ let
       };
       xdg.configFile = lib.mkOption { type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything); default = { }; };
       systemd.user.services = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
+      systemd.user.sockets = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
       systemd.user.targets = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
       assertions = lib.mkOption { type = lib.types.listOf lib.types.anything; default = [ ]; };
       warnings = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
@@ -254,6 +257,75 @@ let
       );
     in
     !(attempt.success && attempt.value);
+
+  homePackageFile = cfg: fileName:
+    let
+      matches = builtins.filter (p: builtins.pathExists "${p}/bin/${fileName}") cfg.home.packages;
+    in
+    if matches == [ ]
+    then throw "home-manager check fixture: no package in home.packages provides bin/${fileName} (got: ${builtins.toJSON (map (p: p.name or "?") cfg.home.packages)})"
+    else builtins.readFile "${builtins.head matches}/bin/${fileName}";
+
+  shpool-disabled = evalHm [ shpoolModule ];
+  shpool-server = evalHm [ shpoolModule { nixremote.shpool.server.enable = true; } ];
+  shpool-peer = evalHm [ shpoolModule { nixremote.shpool.peers.devhome = { }; } ];
+  shpool-lines = evalHm [ shpoolModule { nixremote.shpool.server = { enable = true; restoreLines = 1000; }; } ];
+
+  shpoolResults = [
+    (check "shpool/disabled-server-adds-no-unit-or-config"
+      (shpool-disabled.systemd.user.services == { }
+        && shpool-disabled.systemd.user.sockets == { }
+        && shpool-disabled.xdg.configFile == { })
+      "composing the module without enabling its server must be inert -- got services: ${builtins.toJSON shpool-disabled.systemd.user.services}, sockets: ${builtins.toJSON shpool-disabled.systemd.user.sockets}, config files: ${builtins.toJSON shpool-disabled.xdg.configFile}")
+
+    (check "shpool/server-renders-transparent-terminal-config"
+      (let text = shpool-server.xdg.configFile."shpool/config.toml".text; in
+      lib.hasInfix "keybinding = []" text
+      && lib.hasInfix "nodaemonize = true" text
+      && lib.hasInfix ''prompt_prefix = ""'' text
+      && lib.hasInfix ''session_restore_mode = "screen"'' text)
+      "the default must disable shpool's keybinding and prompt injection, disable hidden autodaemonization, and restore one screen -- got: ${shpool-server.xdg.configFile."shpool/config.toml".text}")
+
+    (check "shpool/server-survives-home-manager-switches"
+      (let
+        service = shpool-server.systemd.user.services.shpool;
+        socket = shpool-server.systemd.user.sockets.shpool;
+      in
+      service.Unit.X-SwitchMethod == "keep-old"
+      && socket.Unit.X-SwitchMethod == "keep-old"
+      && service.Install.WantedBy == [ "default.target" ]
+      && service.Unit.Requires == [ "shpool.socket" ]
+      && socket.Socket.ListenStream == "%t/shpool/shpool.socket")
+      "both units must stay live across generation switches, and the daemon must belong to the user manager rather than the graphical session -- got service: ${builtins.toJSON shpool-server.systemd.user.services.shpool}, socket: ${builtins.toJSON shpool-server.systemd.user.sockets.shpool}")
+
+    (check "shpool/peer-publishes-current-terminal-and-local-foot-commands"
+      (lib.all (name: builtins.any (p: builtins.pathExists "${p}/bin/${name}") shpool-peer.home.packages) [
+        "shpool@devhome"
+        "shpool.devhome"
+        "foot@devhome"
+        "foot.devhome"
+      ])
+      "one peer must publish both supported spellings of the attach command and the local-Foot command -- got packages: ${builtins.toJSON (map (p: p.name or "?") shpool-peer.home.packages)}")
+
+    (check "shpool/attach-wrapper-force-reattaches-the-main-session-over-ssh"
+      (let text = homePackageFile shpool-peer "shpool@devhome"; in
+      lib.hasInfix "session=\"\${1:-main}\"" text
+      && lib.hasInfix "shpool attach -f" text
+      && lib.hasInfix "-t -- devhome" text
+      && lib.hasInfix "session names must start with an alphanumeric" text)
+      "the rendered wrapper must default to main, validate an optional replacement name, allocate a TTY, and force takeover from a stale transport -- got: ${homePackageFile shpool-peer "shpool@devhome"}")
+
+    (check "shpool/foot-wrapper-opens-the-local-terminal-around-the-attach-wrapper"
+      (let text = homePackageFile shpool-peer "foot@devhome"; in
+      lib.hasInfix "--app-id=foot@devhome" text
+      && lib.hasInfix "--title=devhome" text
+      && lib.hasInfix "/bin/shpool@devhome" text)
+      "foot@peer must be a local Foot whose child is the persistent attach wrapper, not a remotely forwarded Foot -- got: ${homePackageFile shpool-peer "foot@devhome"}")
+
+    (check "shpool/restoreLines-renders-upstreams-inline-table"
+      (lib.hasInfix "session_restore_mode = { lines = 1000 }" shpool-lines.xdg.configFile."shpool/config.toml".text)
+      "restoreLines must render the TOML shape shpool documents, not a second invented schema -- got: ${shpool-lines.xdg.configFile."shpool/config.toml".text}")
+  ];
 
   # ── sunshine: requireOutput/compositor/outputQueryCommand wiring ──────────────────────────
   #
@@ -643,6 +715,14 @@ let
       (builtins.elem "sshpass" (map lib.getName tools-nixos.environment.systemPackages))
       "got: ${builtins.toJSON (map lib.getName tools-nixos.environment.systemPackages)}")
 
+    (check "tools/shpool-routes-to-aur-on-arch"
+      (tools-shpool.nixremote.archPackages == [ ] && tools-shpool.nixremote.aurPackages == [ "shpool" ])
+      "shpool must never be handed to pacman because it exists only in the AUR -- got pacman: ${builtins.toJSON tools-shpool.nixremote.archPackages}, AUR: ${builtins.toJSON tools-shpool.nixremote.aurPackages}")
+
+    (check "tools/nixos-resolves-shpool-through-nixpkgs"
+      (builtins.elem "shpool" (map lib.getName tools-nixos-shpool.environment.systemPackages))
+      "got: ${builtins.toJSON (map lib.getName tools-nixos-shpool.environment.systemPackages)}")
+
     # Non-vacuity: an unknown transport name must be REJECTED at eval time (the `enum` type in
     # tools.nix's `mkGroup`), the same "typo is an error, not a silent no-op" contract nixdev's
     # own mkGroup enforces. Proven live by temporarily reverting the `enum` to a bare `str` and
@@ -897,7 +977,7 @@ in
 
   eval-tests =
     let
-      allResults = results ++ hmResults ++ forwardResults ++ toolsResults ++ installResults ++ launcherResults ++ [
+      allResults = results ++ hmResults ++ shpoolResults ++ forwardResults ++ toolsResults ++ installResults ++ launcherResults ++ [
         (check "console/disabled-instance-adds-no-units"
           (consoleServiceNames console-disabled == [ ])
           "enable = false must add zero systemd --user units -- got: ${builtins.toJSON (consoleServiceNames console-disabled)}")

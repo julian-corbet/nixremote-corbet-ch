@@ -12,17 +12,10 @@
 # case, rather than growing a second `install.openssh.enable`/`install.waypipe.enable` pair that
 # would just be this same mechanism re-invented per entry.
 #
-# `tssh` DELIBERATELY HAS NO ENTRY HERE, and never should. Evaluated 2026-08-04 as a candidate
-# alongside openssh/waypipe (it was hand-installed on both Arch hosts, same as they were) and
-# rejected: its one distinctive feature over plain openssh is `tsshd`, a mosh-like UDP roaming
-# mode -- and `tsshd` is installed on NEITHER host, so that feature is inert everywhere it could
-# matter. Everything tsshd would provide is already solved elsewhere in this fleet: roaming by
-# the WireGuard-based overlay (the overlay IP does not change when a laptop moves networks),
-# session survival by tmux/zellij, file transfer by rsync/scp and the NFS/SMB shares already in
-# place. Zero shell-history hits for `tssh` across fish and zsh on the laptop, for what it's
-# worth as a secondary signal. Uninstalled from both hosts the same pass this catalogue was
-# added; see this repo's commit history rather than a host file for that action, since neither
-# host ever had a Nix declaration for it to remove.
+# `tssh` deliberately has no entry. nixremote keeps the two distinct concerns explicit: shpool
+# owns PTY/session persistence, while OpenSSH owns today's byte-transparent network transport.
+# A future roaming transport can replace that outer layer without replacing the session owner;
+# tssh's combined model would blur the boundary this catalogue now exposes directly.
 { config, lib, ... }:
 let
   cfg = config.nixremote;
@@ -65,8 +58,9 @@ in
 
           nixarch.packages.aur = config.nixremote.aurPackages;
 
-        Empty for the current catalogue -- every transport tool is currently an official-repo
-        package -- but the mechanism stays for whatever this catalogue grows next.
+        shpool currently occupies this channel because Arch publishes it in the AUR rather than
+        an official repository. Keeping the channels separate prevents a pacman transaction from
+        failing with "target not found".
       '';
     };
 

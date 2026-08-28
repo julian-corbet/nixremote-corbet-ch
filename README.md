@@ -1,7 +1,8 @@
 # nixremote
 
-Declarative, address-cascading native app forwarding for Wayland — over Nix
-— plus a declarative wayvnc + noVNC "whole session in a browser" leg (see
+Declarative remote work for Wayland over Nix: persistent native terminals,
+address-cascading native app forwarding, plus a declarative wayvnc + noVNC
+"whole session in a browser" leg (see
 ["Full session in a browser"](#full-session-in-a-browser-wayvnc--novnc)
 below) and a self-hosted RustDesk remote-desktop server for the cases
 neither fits (see ["Self-hosted RustDesk server"](#self-hosted-rustdesk-server)
@@ -18,10 +19,11 @@ network-topology-aware layer around it: which address to reach a peer at
 (you're not always on the same LAN), and reproducing all of it from a single
 Nix config instead of hand-written fish functions and `~/.ssh/config` edits.
 
-**nixremote** is that layer. One module, `nixremote.forward.<peer>`: an ordered
+**nixremote** is that layer. `nixremote.forward.<peer>` provides an ordered
 address cascade (native OpenSSH `Match ... exec` blocks — try the fast LAN
-address first, fall back to a VPN/overlay address when you're not home),
-and a wrapper script around waypipe's own `ssh` mode.
+address first, fall back to a VPN/overlay address when you're not home) and a
+wrapper around waypipe's own `ssh` mode. `nixremote.shpool` reuses the same SSH
+alias for persistent shells while keeping the local terminal completely native.
 
 Transport binaries use the same declarative `nixremote.transport` catalogue on
 each platform: `nixosModules.tools` resolves the matching nixpkgs derivations
@@ -38,16 +40,15 @@ on Nix and can grow a Wayland session.
 
 ## Status
 
-**Pre-alpha.** Seven home-manager modules (`forward`, `fishDispatch`, `launcher`, `sunshine`,
-`moonlight`, `console`, `rustdeskClient`), plus the standalone `nixosModules.rustdesk`; `console`
-(wayvnc + noVNC) is the newest and, unlike the others below, has real eval-time test coverage —
-`checks/default.nix` exercises its attrsOf wiring, unit shape, the auth/tls coupling assertion, and
-the actual *rendered command text* of every generated script (not just option values), including
-regression tests for two real defects a text-blind check missed the first time (a `--` that silently
-swallowed every trailing CLI argument, and `--vnc` being handed the wrong address — the BIND address
-instead of the one to actually DIAL). It also runs in production — both legs, wayvnc and its noVNC
-front end — against a session confined to software rendering (`WLR_RENDERER=pixman`) because that
-machine's
+**Pre-alpha.** Eight home-manager modules (`forward`, `fishDispatch`, `launcher`, `sunshine`,
+`moonlight`, `console`, `shpool`, `rustdeskClient`), plus the standalone `nixosModules.rustdesk`.
+`shpool` is the newest. `checks/default.nix` exercises its rendered config, service/socket lifetime,
+package routing, and the actual generated attach and Foot commands. The same suite covers
+`console`'s attrsOf wiring, unit shape, auth/tls coupling, and rendered scripts, including regression
+tests for two real defects a text-blind check missed (a `--` that swallowed trailing CLI arguments,
+and `--vnc` receiving the bind address rather than the address to dial). `console` also runs in
+production — both wayvnc and its noVNC front end — against a session confined to software rendering
+(`WLR_RENDERER=pixman`) because that machine's
 only DRM render node belongs to a GPU that session must not touch — precisely the case its own
 ["One precondition this module cannot set for you"](#full-session-in-a-browser-wayvnc--novnc) note
 describes.
@@ -162,7 +163,7 @@ publishes it as a genuine script on `$PATH`, in both spellings — `<app>@<peer>
 
   nixremote.forward.some-peer = {
     addresses = [ { address = "192.168.1.10"; } ];
-    apps = [ "foot" "firefox" ];
+    apps = [ "firefox" ];
   };
 }
 ```
@@ -206,6 +207,53 @@ declared; `apps` is what makes a forwarded app a real command.
 replace a real machine's existing vendor fish config). One corollary of that placement: fish sources
 `conf.d/*.fish` *before* `config.fish`, so any `config.fish` on the machine that defines its own
 `fish_command_not_found` is sourced later and wins.
+
+## Persistent native terminals (shpool)
+
+Forwarding a remote Foot window makes the terminal process part of the Waypipe connection's
+failure domain. `homeManagerModules.shpool` moves the durable boundary down to the remote PTY:
+Foot runs locally, SSH carries ordinary terminal bytes, and a remote shpool daemon owns the shell.
+Closing Foot or losing SSH detaches; running the same command again redraws and reattaches.
+
+```nix
+{
+  imports = [
+    inputs.nixremote.homeManagerModules.forward
+    inputs.nixremote.homeManagerModules.shpool
+  ];
+
+  nixremote.forward.some-peer.addresses = [
+    { address = "192.168.1.10"; }
+    { address = "100.64.0.10"; }
+  ];
+
+  # Run the daemon on this machine, and publish wrappers for its peer.
+  nixremote.shpool.server.enable = true;
+  nixremote.shpool.peers.some-peer = { };
+}
+```
+
+Select `shpool` in `nixremote.transport` on every machine that runs the daemon. The NixOS backend
+resolves `pkgs.shpool`; the Arch backend sends `shpool` to the AUR channel rather than pacman.
+
+The generated commands deliberately require no multiplexer key vocabulary:
+
+```console
+$ foot@some-peer          # local Foot, remote persistent session "main"
+$ foot@some-peer work     # a separate persistent session named "work"
+$ shpool@some-peer logs   # attach in the terminal already open
+```
+
+There is no shpool detach keybinding and no injected prompt prefix. Close the window to detach;
+use normal shell `exit` to end that session. Every reattach uses `shpool attach -f`, so a stale SSH
+transport cannot leave the session occupied indefinitely. The daemon belongs to the user manager's
+`default.target`, not the graphical session, and both its service and socket use Home Manager's
+`keep-old` switch policy: an ordinary generation switch does not kill the PTYs it owns. An explicit
+`systemctl --user restart shpool.service` remains intentionally session-destructive.
+
+The initial transport is plain SSH. Mosh can be layered in later without changing who owns the
+session, but it is intentionally not hidden behind an automatic fallback with different terminal
+semantics.
 
 ### Audio
 
@@ -348,10 +396,11 @@ Wayland socket, plus — with `web.enable` — a second unit running noVNC's `no
 nixpkgs as `bin/novnc`) in front of it, giving a plain `http://<host>:6080/vnc.html` URL with nothing
 to install on the viewing end.
 
-**Capability boundary: wlroots-only.** wayvnc captures frames through `zwlr_screencopy_manager_v1`,
-a wlr-* protocol extension every compositor this family targets (niri, sway, scroll) implements —
-GNOME/Mutter or KDE/KWin sessions expose no equivalent surface at all, and there is no portable
-substitute. This is a hard capability boundary of wayvnc itself, not a config knob.
+**Capability boundary: screencopy and virtual input, not wlroots.** wayvnc captures frames through
+`zwlr_screencopy_manager_v1` and controls the session through virtual-input protocols. A compositor
+may expose those whether it is built on wlroots, Smithay, or something else; what matters is the
+globals on the actual Wayland socket. GNOME/Mutter and KDE/KWin do not expose this wayvnc-facing
+surface, so they remain outside the module's capability set.
 
 **Security posture, by default.** `address` (wayvnc's own raw RFB bind) defaults to loopback-only —
 plain RFB has a long history of weak-or-absent auth, so this module never defaults to a public
@@ -368,13 +417,10 @@ every service start (never at Nix eval time, never copied into the world-readabl
 them as plain strings, never a bare Nix `path` literal (see `home/console.nix`'s own header for why
 a `path` value would leak the referenced file into the store the moment it were used).
 
-**One precondition this module cannot set for you.** A wlroots compositor auto-detects its renderer
-and will reach for a real DRM render node if one exists — on an estate where the only render node
-belongs to a GPU other sessions must not touch, that's a problem `WLR_RENDERER=pixman` (software
-rendering) fixes, but it has to be set on the *compositor's own* systemd unit, not on anything this
-module renders: wayvnc is a screencopy *client*, it links no wlroots rendering code and never reads
-`WLR_RENDERER` itself. A session with no render node at all (nothing to auto-detect toward) needs no
-such override — `wlr_renderer_autocreate` has nothing to reach for.
+**One precondition this module cannot set for you.** A headless CPU-only session must select the
+compositor's software renderer. For wlroots that is commonly `WLR_RENDERER=pixman`; a Smithay
+compositor uses its own renderer configuration. The setting belongs on the *compositor's* unit,
+not anything rendered here: wayvnc is a screencopy client and does no rendering itself.
 
 See [`home/console.nix`](home/console.nix)'s own header for the full option reference — `output`
 (capture one output or, the default, all of them via wayvnc 0.10.1's `-a`/`--desktop`),
@@ -484,17 +530,18 @@ because the icon *name* in its `.desktop` file resolves against the *local* icon
 
 | Path | Purpose |
 |---|---|
-| `flake.nix` | Flake entry point; exports `homeManagerModules.{forward,fishDispatch,launcher,sunshine,moonlight,console,rustdeskClient}`, `nixosModules.{rustdesk,tools}`, and the Arch system-manager module. |
+| `flake.nix` | Flake entry point; exports `homeManagerModules.{forward,fishDispatch,launcher,sunshine,moonlight,console,shpool,rustdeskClient}`, `nixosModules.{rustdesk,tools}`, and the Arch system-manager module. |
 | `home/forward.nix` | The core module — package provisioning, address cascade, wrapper scripts, keepalive, orphan reaping. See its header comment for the full design rationale and gotchas. |
 | `home/fish-dispatch.nix` | Optional open-ended `<app>@<peer>` fish integration, layered on top of `forward`. Statusless by construction — see the dispatch section above; `forward`'s own `apps` is the mechanism for a real command. |
 | `home/launcher.nix` | **rlaunch** — a launcher whose tabs are MACHINES. See ["A launcher whose tabs are machines"](#a-launcher-whose-tabs-are-machines) below. |
 | `home/sunshine.nix` | The inverse direction — declarative Sunshine (LizardByte) desktop/game streaming host, serving THIS machine's Wayland session to a remote Moonlight client. |
 | `home/moonlight.nix` | The VIEWER half of the streaming pair `sunshine` serves — a transport client (bitrate/codec/latency settings), not a player. Deliberately does not manage Moonlight's own pairing state, which is runtime, not config — see the module's own header. |
-| `home/console.nix` | The "full session in a browser" leg — declarative wayvnc + noVNC. See ["Full session in a browser"](#full-session-in-a-browser-wayvnc--novnc) above and the module's own header (wlroots-only capability boundary, secrets-as-files handling, the `WLR_RENDERER=pixman` precondition it cannot set for you). |
+| `home/console.nix` | The "full session in a browser" leg — declarative wayvnc + noVNC. See ["Full session in a browser"](#full-session-in-a-browser-wayvnc--novnc) above and the module's own header (screencopy/input capability boundary, secrets-as-files handling, and compositor-side software rendering). |
+| `home/shpool.nix` | Persistent remote PTYs with native local terminal behavior: a user daemon, `shpool@peer` attach commands, and local `foot@peer` launchers. |
 | `home/rustdesk-client.nix` | The client half — points THIS machine's RustDesk at a self-hosted server by UPSERTING only the keys it owns into `RustDesk2.toml`, leaving the app's own runtime-learned state intact. Renders no unit: RustDesk is a GUI a human launches. |
 | `modules/rustdesk.nix` | Self-hosted RustDesk server (hbbs+hbbr), a single podman container. NixOS-only — see "Self-hosted RustDesk server" above. |
 | `modules/{tools,nixos-tools,system-manager}.nix` | Platform-neutral transport catalogue plus NixOS and Arch/CachyOS package-resolution backends. |
-| `checks/default.nix` | Eval-time tests for the NixOS modules and transport catalogue (no VM, no container start — module evaluation only). |
+| `checks/default.nix` | Eval-time and rendered-artifact tests for the modules and transport catalogue (no VM or container start). |
 | `experiments/` | Throwaway trials — see [`experiments/README.md`](experiments/README.md). |
 | `studies/` | Written-up findings — see [`studies/README.md`](studies/README.md). |
 

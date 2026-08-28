@@ -160,13 +160,21 @@
         </p>
       </div>
       <div class="feature">
+        <h3>Persistent native terminals</h3>
+        <p>
+          <code>foot@some-peer</code> opens a local Foot around a remote
+          shpool-owned PTY. Closing the window or losing SSH only detaches;
+          reopening the same command reattaches. No multiplexer UI, prompt
+          injection, or detach key vocabulary.
+        </p>
+      </div>
+      <div class="feature">
         <h3><code>&lt;app&gt;@&lt;peer&gt;</code> dispatch</h3>
         <p>
           Optional fish integration: <code>firefox@some-peer</code> works
-          for any app name, matching the <code>tmux@&lt;host&gt;</code> /
-          <code>zellij@&lt;host&gt;</code> convention already in use
-          here &mdash; no need to pre-declare every app you might
-          ever forward.
+          for any app name, using the same host-qualified spelling as
+          <code>shpool@&lt;host&gt;</code> &mdash; no need to pre-declare
+          every app you might ever forward.
         </p>
       </div>
       <div class="feature">
@@ -181,13 +189,11 @@
         </p>
       </div>
       <div class="feature">
-        <h3>No AUR, no pacman, no dependency</h3>
+        <h3>One transport catalogue</h3>
         <p>
-          Package provisioning comes straight from nixpkgs via
-          <code>home.packages</code>. Only <code>nixpkgs</code> +
-          <code>home-manager</code> required &mdash; usable on any
-          Wayland-capable, home-manager-managed system, not just an
-          Arch/nixarch box.
+          NixOS resolves selected tools through nixpkgs; Arch publishes
+          official-repository and AUR names on separate channels so one
+          missing package cannot abort the other transaction.
         </p>
       </div>
     </div>

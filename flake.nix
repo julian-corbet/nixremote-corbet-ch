@@ -1,5 +1,5 @@
 {
-  description = "nixremote — declarative, address-cascading native Wayland app forwarding over Nix, plus a self-hosted RustDesk remote-desktop server (pre-alpha scaffold)";
+  description = "nixremote — declarative persistent terminals, native Wayland app forwarding, and remote desktops over Nix";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -44,10 +44,14 @@
         fishDispatch = ./home/fish-dispatch.nix;
         sunshine = sunshineModule;
 
+        # Persistent remote shells without taking over the local terminal UI. The server daemon
+        # and client wrappers share one module because every workstation can naturally be both.
+        shpool = ./home/shpool.nix;
+
         # nixremote.console.<name> -- wayvnc + noVNC, the "full session in a browser" leg. Session
         # -scoped like sunshine, so home-manager, not NixOS -- see the module's own header for the
-        # wlroots-only capability boundary and why it takes no `probeFact` (no cross-repo fact
-        # needed: which compositor is in use doesn't change how this module talks to wayvnc).
+        # screencopy/input protocol boundary and why it takes no `probeFact` (no cross-repo fact
+        # needed: the socket's advertised capabilities decide whether wayvnc can attach).
         console = ./home/console.nix;
 
         # nixremote.moonlight -- the VIEWER half of the streaming pair `sunshine` above serves.
@@ -99,6 +103,7 @@
           inherit sunshineModule forwardModule;
           launcherModule = self.homeManagerModules.launcher;
           consoleModule = self.homeManagerModules.console;
+          shpoolModule = self.homeManagerModules.shpool;
           rustdeskClientModule = self.homeManagerModules.rustdeskClient;
           # The Arch plane, tools.nix included (system-manager.nix imports it) -- see
           # checks/default.nix's own tools/* section for what is under test.
